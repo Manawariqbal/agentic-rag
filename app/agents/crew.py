@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 from crewai import Crew, Process
 
 from app.agents.tasks import (
@@ -6,15 +8,24 @@ from app.agents.tasks import (
 )
 
 
+@dataclass
+class CrewRunResult:
+    answer: str
+    citations: list
+    raw_output: str
+
+
 class AgenticRAGCrew:
 
     def __init__(
         self,
         research_agent,
         answer_agent,
+        rag_tool,
     ):
         self.research_agent = research_agent
         self.answer_agent = answer_agent
+        self.rag_tool = rag_tool
 
     def create_crew(self, query: str):
 
@@ -29,20 +40,31 @@ class AgenticRAGCrew:
             research_task=research_task,
         )
 
-        crew = Crew(
+        return Crew(
             agents=[
                 self.research_agent.agent,
                 self.answer_agent.agent,
             ],
-
             tasks=[
                 research_task,
                 answer_task,
             ],
-
             process=Process.sequential,
-
             verbose=True,
         )
 
-        return crew
+    def run(self, query: str) -> CrewRunResult:
+
+        crew = self.create_crew(query)
+
+        result = crew.kickoff()
+
+        answer = str(result.raw)
+
+        citations = self.rag_tool.get_last_citations()
+
+        return CrewRunResult(
+            answer=answer,
+            citations=citations,
+            raw_output=str(result),
+        )

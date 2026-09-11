@@ -1,17 +1,12 @@
-from typing import Any
-
 from app.config import settings
-from app.rag.embedding import EmbeddingProvider
-from app.rag.vector_store import VectorStore
 
 
 class Retriever:
-
     def __init__(
         self,
-        vector_store: VectorStore,
-        embedding_provider: EmbeddingProvider,
-        top_k: int | None = None,
+        vector_store,
+        embedding_provider=None,
+        top_k=None,
     ):
         self.vector_store = vector_store
         self.embedding_provider = embedding_provider
@@ -22,11 +17,7 @@ class Retriever:
             else settings.retrieval_top_k
         )
 
-    def retrieve(
-        self,
-        query: str,
-    ) -> list[dict[str, Any]]:
-
+    def retrieve(self, query: str):
         if not query.strip():
             raise ValueError("Query cannot be empty.")
 

@@ -1,13 +1,16 @@
+from app.agents.crew import AgenticRAGCrew
+from app.agents.crew_answer_agent import CrewAnswerAgent
+from app.agents.rag_tool import RAGTool
+from app.agents.research_agent import ResearchAgent
 from app.agents.router_agent import RouterAgent
+
 from app.memory.conversation_memory import ConversationMemory
-from app.agents.answer_agent import AnswerAgent
 
 from app.rag.citations import CitationManager
-from app.rag.llm import MockLLMProvider
+from app.rag.embedding import OllamaEmbeddingProvider
+from app.rag.pgvector_store import PGVectorStoreAdapter
 from app.rag.reranker import SimpleReranker
 from app.rag.retriever import Retriever
-
-from app.observability.phoenix import PhoenixTracer
 
 
 class ChatService:
@@ -20,28 +23,20 @@ class ChatService:
         reranker: SimpleReranker,
         citation_manager: CitationManager,
     ):
+
         self.memory = memory
+
         self.router = router
+
         self.retriever = retriever
+
         self.reranker = reranker
+
         self.citation_manager = citation_manager
 
-        # ------------------------------------------------
-        # Phoenix tracer
-        # ------------------------------------------------
-
-        self.tracer = PhoenixTracer(
-            project_name="agentic-rag"
-        )
-
-        # ------------------------------------------------
-        # Answer Agent
-        # ------------------------------------------------
-
-        self.answer_agent = AnswerAgent(
-            llm=MockLLMProvider(),
-            citation_manager=citation_manager,
-        )
+    # ---------------------------------------------------------
+    # Main Chat
+    # ---------------------------------------------------------
 
     def chat(
         self,
@@ -49,9 +44,9 @@ class ChatService:
         message: str,
     ):
 
-        # =================================================
+        # -----------------------------------------------------
         # 1. Store user message
-        # =================================================
+        # -----------------------------------------------------
 
         self.memory.add_message(
             conversation_id=conversation_id,
@@ -59,29 +54,21 @@ class ChatService:
             content=message,
         )
 
-        # =================================================
+        # -----------------------------------------------------
         # 2. Route query
-        # =================================================
+        # -----------------------------------------------------
 
-        with self.tracer.trace(
-            "query_routing",
-            {
-                "conversation_id": conversation_id,
-                "query": message,
-            },
-        ):
+        decision = self.router.route(message)
 
-            decision = self.router.route(message)
-
-        # =================================================
-        # 3. General query
-        # =================================================
+        # -----------------------------------------------------
+        # 3. General question
+        # -----------------------------------------------------
 
         if decision.route == "general":
 
             answer = (
-                "This is a general question and does not "
-                "require the enterprise knowledge base."
+                "This is a general question and does not require "
+                "the enterprise knowledge base."
             )
 
             self.memory.add_message(
@@ -97,129 +84,150 @@ class ChatService:
                 "citations": [],
             }
 
-        # =================================================
-        # 4. Retrieval
-        # =================================================
+        # -----------------------------------------------------
+        # 4. Create RAG Tool
+        #
+        # IMPORTANT:
+        # Create it per request so citation state is isolated.
+        # -----------------------------------------------------
 
-        with self.tracer.trace(
-            "retrieval",
-            {
-                "conversation_id": conversation_id,
-                "query": message,
-            },
-        ):
-
-            retrieved_results = self.retriever.retrieve(
-                message
-            )
-
-        # Record retrieval information
-
-        self.tracer.record(
-            "retrieval_results",
-            {
-                "query": message,
-                "result_count": len(retrieved_results),
-            },
+        rag_tool = RAGTool(
+            retriever=self.retriever,
+            reranker=self.reranker,
+            citation_manager=self.citation_manager,
+            rerank_top_k=3,
         )
 
-        # =================================================
-        # 5. Reranking
-        # =================================================
+        # -----------------------------------------------------
+        # 5. Create Research Agent
+        # -----------------------------------------------------
 
-        with self.tracer.trace(
-            "reranking",
-            {
-                "conversation_id": conversation_id,
-                "query": message,
-                "retrieved_count": len(retrieved_results),
-            },
-        ):
-
-            reranked_results = self.reranker.rerank(
-                query=message,
-                results=retrieved_results,
-                top_k=3,
-            )
-
-        # Record reranking information
-
-        self.tracer.record(
-            "reranking_results",
-            {
-                "query": message,
-                "result_count": len(reranked_results),
-            },
+        research_agent = ResearchAgent(
+            rag_tool=rag_tool
         )
 
-        # =================================================
-        # 6. Generate answer
-        # =================================================
+        # -----------------------------------------------------
+        # 6. Create Answer Agent
+        # -----------------------------------------------------
 
-        with self.tracer.trace(
-            "answer_generation",
-            {
-                "conversation_id": conversation_id,
-                "query": message,
-                "context_count": len(reranked_results),
-            },
-        ):
+        answer_agent = CrewAnswerAgent()
 
-            response = self.answer_agent.answer(
-                query=message,
-                results=reranked_results,
+        # -----------------------------------------------------
+        # 7. Create Crew
+        # -----------------------------------------------------
+
+        crew = AgenticRAGCrew(
+            research_agent=research_agent,
+            answer_agent=answer_agent,
+            rag_tool=rag_tool,
+        )
+
+        # -----------------------------------------------------
+        # 8. Execute CrewAI
+        # -----------------------------------------------------
+
+        crew_result = crew.run(message)
+
+        answer = crew_result.answer
+
+        citations = crew_result.citations
+
+        # -----------------------------------------------------
+        # 9. Normalize citations
+        # -----------------------------------------------------
+
+        answer = self._normalize_citations(
+            answer=answer,
+            citations=citations,
+        )
+
+        # -----------------------------------------------------
+        # 10. Keep only citations actually referenced
+        # -----------------------------------------------------
+
+        used_citations = (
+            self.citation_manager.filter_used_citations(
+                answer=answer,
+                citations=citations,
             )
+        )
 
-        # =================================================
-        # 7. Convert citations
-        # =================================================
-
-        citations = [
-            {
-                "citation_id": citation.citation_id,
-                "source": citation.source,
-                "section": citation.section,
-                "chunk_index": citation.chunk_index,
-            }
-            for citation in response.citations
-        ]
+        # -----------------------------------------------------
+        # 11. Store assistant message
+        # -----------------------------------------------------
 
         citation_strings = [
             citation.display()
-            for citation in response.citations
+            for citation in used_citations
         ]
-
-        # =================================================
-        # 8. Store assistant response
-        # =================================================
 
         self.memory.add_message(
             conversation_id=conversation_id,
             role="assistant",
-            content=response.answer,
+            content=answer,
             citations=citation_strings,
         )
 
-        # =================================================
-        # 9. Record final response
-        # =================================================
-
-        self.tracer.record(
-            "chat_response",
-            {
-                "conversation_id": conversation_id,
-                "route": "rag",
-                "citation_count": len(citations),
-            },
-        )
-
-        # =================================================
-        # 10. Return API response
-        # =================================================
+        # -----------------------------------------------------
+        # 12. API response
+        # -----------------------------------------------------
 
         return {
-            "answer": response.answer,
+            "answer": answer,
             "route": "rag",
             "reason": decision.reason,
-            "citations": citations,
+            "citations": used_citations,
         }
+
+    # ---------------------------------------------------------
+    # Citation normalization
+    # ---------------------------------------------------------
+
+    def _normalize_citations(
+        self,
+        answer: str,
+        citations: list,
+    ) -> str:
+
+        if not citations:
+            return answer
+
+        # If model already used [1], [2], etc.,
+        # preserve them.
+        if self.citation_manager.validate_citations(
+            answer,
+            citations,
+        ):
+            return answer
+
+        # Convert:
+        #
+        # (Source: leave_and_attendance_policy.pdf — Entitlement)
+        #
+        # into:
+        #
+        # [1]
+
+        for citation in citations:
+
+            source_text = (
+                f"(Source: {citation.source} — "
+                f"{citation.section})"
+            )
+
+            if source_text in answer:
+
+                answer = answer.replace(
+                    source_text,
+                    f"[{citation.citation_id}]",
+                )
+
+        # Remove any invalid citation numbers.
+        answer = (
+            self.citation_manager.remove_invalid_citations(
+                answer,
+                citations,
+            )
+        )
+
+        return answer

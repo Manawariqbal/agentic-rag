@@ -45,3 +45,5 @@ ragas
 # ============================================
 arize-phoenix-client
 arize-phoenix-otel
+apscheduler
+email-validator apscheduler

@@ -3,39 +3,88 @@ from app.rag.citations import CitationManager
 
 def main():
 
+    manager = CitationManager()
+
     results = [
         {
-            "text": "Employees are entitled to 20 days...",
-            "score": 0.91,
             "metadata": {
-                "source": "leave_and_attendance_policy.pdf",
-                "section": "Annual Leave",
+                "source": "leave_policy.pdf",
+                "section": "Entitlement",
                 "chunk_index": 0,
-            },
+            }
         },
         {
-            "text": "Employees must submit expenses...",
-            "score": 0.82,
             "metadata": {
-                "source": "travel_and_expense_policy.pdf",
-                "section": "Expense Submission",
-                "chunk_index": 1,
-            },
+                "source": "leave_policy.pdf",
+                "section": "Entitlement",
+                "chunk_index": 0,
+            }
+        },
+        {
+            "metadata": {
+                "source": "leave_policy.pdf",
+                "section": "Approval",
+                "chunk_index": 0,
+            }
         },
     ]
 
-    manager = CitationManager()
+    citations = manager.build_citations(results)
 
-    citations = manager.build_citations(
-        results
+    print("\nCITATIONS")
+    print("=" * 60)
+
+    for citation in citations:
+        print(citation.display())
+
+    answer = (
+        "Employees receive 20 days of annual leave [1]."
     )
 
-    print("CITATIONS")
+    print("\nUSED CITATIONS")
+    print("=" * 60)
+
+    used = manager.filter_used_citations(
+        answer=answer,
+        citations=citations,
+    )
+
+    for citation in used:
+        print(citation.display())
+
+    print("\nVALIDATION")
     print("=" * 60)
 
     print(
-        manager.format_citations(citations)
+        manager.validate_citations(
+            answer=answer,
+            citations=citations,
+        )
     )
+
+    invalid_answer = (
+        "Employees receive 20 days [1]. "
+        "The policy also says something else [99]."
+    )
+
+    print("\nINVALID CITATION CHECK")
+    print("=" * 60)
+
+    print(
+        manager.validate_citations(
+            answer=invalid_answer,
+            citations=citations,
+        )
+    )
+
+    cleaned = manager.remove_invalid_citations(
+        answer=invalid_answer,
+        citations=citations,
+    )
+
+    print("\nCLEANED ANSWER")
+    print("=" * 60)
+    print(cleaned)
 
 
 if __name__ == "__main__":

@@ -14,17 +14,15 @@ class ResearchAgent:
             role="Enterprise Knowledge Researcher",
 
             goal=(
-                "Find accurate information from the enterprise "
-                "knowledge base and provide well-supported research "
-                "for the answer agent."
+                "Retrieve accurate information from the enterprise "
+                "knowledge base and provide evidence for the answer agent."
             ),
 
             backstory=(
                 "You are an enterprise research specialist. "
-                "You search the company's knowledge base, identify "
-                "the most relevant information, and preserve source "
-                "references. You never invent information that is "
-                "not present in the retrieved documents."
+                "Use the knowledge_base_search tool to retrieve "
+                "evidence from company documents. "
+                "Do not invent information."
             ),
 
             tools=[rag_tool],
@@ -32,4 +30,8 @@ class ResearchAgent:
             llm=llm,
 
             verbose=True,
+
+            max_iter=1,
+
+            allow_delegation=False,
         )

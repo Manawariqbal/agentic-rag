@@ -1,96 +1,81 @@
-from app.ingestion.chunker import ContextualChunker
-from app.rag.embedding import MockEmbeddingProvider
-from app.rag.reranker import SimpleReranker
-from app.rag.vector_store import InMemoryVectorStore
+from app.config import settings
+from app.rag.embedding import OllamaEmbeddingProvider
+from app.rag.pgvector_store import PGVectorStoreAdapter
 from app.rag.retriever import Retriever
+from app.rag.reranker import SimpleReranker
 
 
 def main():
 
-    content = """
-# Annual Leave
-
-Employees are entitled to 20 days of annual leave per year.
-
-# Sick Leave
-
-Employees are entitled to 10 days of sick leave per year.
-
-# Casual Leave
-
-Employees are entitled to 6 days of casual leave per year.
-"""
-
-    # Chunk
-    chunker = ContextualChunker(
-        chunk_size=500,
-        chunk_overlap=50,
+    embedding_provider = OllamaEmbeddingProvider(
+        model=settings.embedding_model,
+        base_url=settings.ollama_base_url,
     )
 
-    chunks = chunker.chunk(
-        content=content,
-        filename="leave_policy.pdf",
+    vector_store = PGVectorStoreAdapter(
+        embedding_provider=embedding_provider,
+        database=settings.postgres_database,
+        host=settings.postgres_host,
+        port=settings.postgres_port,
+        user=settings.postgres_user,
+        password=settings.postgres_password,
+        table_name="rag_documents_1024",
+        embed_dim=settings.embedding_dimensions,
     )
 
-    # Embeddings
-    embedding_provider = MockEmbeddingProvider(
-        dimensions=384
-    )
-
-    # Vector store
-    vector_store = InMemoryVectorStore(
-        embedding_provider
-    )
-
-    vector_store.add_chunks(chunks)
-
-    # Retrieve top 3
     retriever = Retriever(
         vector_store=vector_store,
         embedding_provider=embedding_provider,
-        top_k=3,
+        top_k=10,
     )
 
-    query = "How many annual leave days are available?"
-
-    retrieved_results = retriever.retrieve(query)
-
-    print("\nBEFORE RERANKING")
-    print("=" * 70)
-
-    for result in retrieved_results:
-
-        print(
-            f"Score: {result['score']:.4f} | "
-            f"{result['metadata']}"
-        )
-
-    # Rerank
     reranker = SimpleReranker()
 
+    query = "How many annual leave days do employees get?"
+
+    # Step 1: Vector retrieval
+    retrieved_results = retriever.retrieve(query)
+
+    print("\n" + "=" * 70)
+    print("BEFORE RERANKING")
+    print("=" * 70)
+
+    for index, result in enumerate(retrieved_results, start=1):
+
+        print(
+            f"{index}. "
+            f"{result['metadata'].get('section')} "
+            f"| {result['score']:.4f}"
+        )
+
+    # Step 2: Reranking
     reranked_results = reranker.rerank(
         query=query,
         results=retrieved_results,
-        top_k=2,
+        top_k=3,
     )
 
-    print("\nAFTER RERANKING")
+    print("\n" + "=" * 70)
+    print("AFTER RERANKING")
     print("=" * 70)
 
-    for result in reranked_results:
+    for index, result in enumerate(
+        reranked_results,
+        start=1,
+    ):
 
         print(
-            f"Rerank score: "
-            f"{result['rerank_score']:.4f}"
+            f"{index}. "
+            f"{result['metadata'].get('section')} "
+            f"| "
+            f"vector={result['score']:.4f} "
+            f"| "
+            f"rerank={result['rerank_score']:.4f}"
         )
 
         print(
-            f"Metadata: "
-            f"{result['metadata']}"
-        )
-
-        print(
-            f"Text:\n{result['text']}\n"
+            result["text"][:300]
+            .replace("\n", " ")
         )
 
 

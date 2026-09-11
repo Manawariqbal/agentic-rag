@@ -2,8 +2,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-
-    # Application
     app_name: str = "Agentic RAG"
     debug: bool = False
 
@@ -16,11 +14,11 @@ class Settings(BaseSettings):
 
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
-    embedding_dimension: int = 384
-
-    # Models
     llm_model: str = "qwen3:8b"
+
+    # Embeddings
     embedding_model: str = "qwen3-embedding:0.6b"
+    embedding_dimensions: int = 1024
 
     # Retrieval
     retrieval_top_k: int = 10

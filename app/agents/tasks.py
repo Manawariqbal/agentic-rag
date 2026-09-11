@@ -8,30 +8,25 @@ def create_research_task(
 
     return Task(
         description=f"""
-Research the following user question using the
-enterprise knowledge base:
+Retrieve evidence for the following user question:
 
 User Question:
 {query}
 
-Instructions:
+Use the knowledge_base_search tool.
 
-1. Use the knowledge_base_search tool.
-2. Retrieve information relevant to the question.
-3. Prefer information directly supported by the documents.
-4. Preserve source and section information.
-5. Do not invent facts.
-6. If the knowledge base does not contain enough information,
-   clearly state that.
+Return the retrieved evidence with:
+- relevant facts
+- source document
+- section
+- citation references
+
+Do not invent information.
 """,
 
         expected_output="""
-A concise research result containing:
-
-- Relevant facts
-- Supporting document information
-- Section information
-- Citation references
+Evidence retrieved from the enterprise knowledge base,
+including relevant facts, source, section and citations.
 """,
 
         agent=research_agent,
@@ -46,26 +41,52 @@ def create_answer_task(
 
     return Task(
         description=f"""
-Answer the user's question:
+Answer this user question:
 
 {query}
 
-Use the research produced by the research agent.
+Use ONLY the research result from the previous task.
 
-Instructions:
+Requirements:
 
-1. Use only information supported by the research.
-2. Do not invent facts.
-3. Give a concise and useful answer.
-4. Preserve citation references such as [1], [2].
-5. If the research does not contain enough information,
+1. Answer directly and concisely.
+
+2. Use only information supported by the research.
+
+3. Do not invent facts.
+
+4. Preserve citation references such as [1] and [2].
+
+5. Place citations immediately after the factual statement
+   they support.
+
+6. Do NOT write source names in the answer.
+
+7. Do NOT write:
+   "Source: ..."
+   "(Source: ...)"
+   "According to leave_and_attendance_policy.pdf..."
+
+8. The final answer should contain only the natural-language
+   answer plus citation markers.
+
+9. If the research does not contain enough information,
    say that the available documents do not provide enough
    information.
+
+10. Do not perform another knowledge-base search.
 """,
 
         expected_output="""
-A clear final answer to the user's question with
-appropriate citation references.
+A concise natural-language answer with citation markers.
+
+Example:
+
+Eligible full-time employees receive 20 days of annual leave
+per calendar year. [1]
+
+Do not include a separate Sources section.
+Do not include filenames or source descriptions in the answer.
 """,
 
         agent=answer_agent,
