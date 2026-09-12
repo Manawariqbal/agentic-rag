@@ -1,5 +1,9 @@
 services:
 
+  # ==========================================================
+  # PostgreSQL + pgvector
+  # ==========================================================
+
   postgres:
     image: pgvector/pgvector:pg16
     container_name: agentic-rag-postgres
@@ -17,11 +21,22 @@ services:
       - postgres_data:/var/lib/postgresql/data
 
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d agentic_rag"]
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U postgres -d agentic_rag"
+        ]
       interval: 10s
       timeout: 5s
       retries: 5
 
+    networks:
+      - agentic-rag-network
+
+
+  # ==========================================================
+  # Arize Phoenix
+  # ==========================================================
 
   phoenix:
     image: arizephoenix/phoenix:latest
@@ -35,9 +50,86 @@ services:
     volumes:
       - phoenix_data:/root/.phoenix
 
+    networks:
+      - agentic-rag-network
+
+
+  # ==========================================================
+  # Agentic RAG FastAPI Backend
+  # ==========================================================
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: agentic-rag-backend
+    restart: unless-stopped
+
+    env_file:
+      - .env.docker
+
+    ports:
+      - "8000:8000"
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+      phoenix:
+        condition: service_started
+
+    networks:
+      - agentic-rag-network
+
+
+  # ==========================================================
+  # OpenWebUI
+  # ==========================================================
+
+  openwebui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: agentic-rag-openwebui
+    restart: unless-stopped
+
+    ports:
+      - "3000:8080"
+
+    environment:
+      WEBUI_AUTH: "true"
+
+    volumes:
+      - openwebui_data:/app/backend/data
+
+    depends_on:
+      backend:
+        condition: service_started
+
+    networks:
+      - agentic-rag-network
+
+
+# ============================================================
+# Persistent Volumes
+# ============================================================
 
 volumes:
 
   postgres_data:
 
   phoenix_data:
+
+  openwebui_data:
+
+
+# ============================================================
+# Network
+# ============================================================
+
+networks:
+
+  agentic-rag-network:
+    driver: bridge

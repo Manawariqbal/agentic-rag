@@ -42,10 +42,6 @@ class ChatService:
 
         tracer = get_tracer()
 
-        # -----------------------------------------------------
-        # Root Phoenix span
-        # -----------------------------------------------------
-
         with tracer.start_as_current_span("chat") as span:
 
             span.set_attribute(
@@ -64,7 +60,20 @@ class ChatService:
             )
 
             # -------------------------------------------------
-            # 1. Store user message
+            # 1. Load previous conversation context
+            # -------------------------------------------------
+
+            previous_messages = self.memory.get_recent_messages(
+                conversation_id=conversation_id,
+                limit=6,
+            )
+
+            conversation_context = self._build_conversation_context(
+                previous_messages
+            )
+
+            # -------------------------------------------------
+            # 2. Store current user message
             # -------------------------------------------------
 
             self.memory.add_message(
@@ -74,10 +83,13 @@ class ChatService:
             )
 
             # -------------------------------------------------
-            # 2. Route query
+            # 3. Context-aware routing
             # -------------------------------------------------
 
-            decision = self.router.route(message)
+            decision = self.router.route(
+                query=message,
+                conversation_context=conversation_context,
+            )
 
             span.set_attribute(
                 "rag.route",
@@ -89,8 +101,13 @@ class ChatService:
                 decision.reason,
             )
 
+            span.set_attribute(
+                "conversation.context_length",
+                len(conversation_context),
+            )
+
             # -------------------------------------------------
-            # 3. General question
+            # 4. General question
             # -------------------------------------------------
 
             if decision.route == "general":
@@ -124,8 +141,18 @@ class ChatService:
                 }
 
             # -------------------------------------------------
-            # RAG route
+            # 5. Build contextualized RAG query
             # -------------------------------------------------
+
+            retrieval_query = self._build_retrieval_query(
+                message=message,
+                conversation_context=conversation_context,
+            )
+
+            span.set_attribute(
+                "rag.retrieval_query",
+                retrieval_query,
+            )
 
             span.set_attribute(
                 "rag.result",
@@ -133,7 +160,7 @@ class ChatService:
             )
 
             # -------------------------------------------------
-            # 4. Create RAG Tool
+            # 6. Create RAG Tool
             #
             # IMPORTANT:
             # Create it per request so citation state is isolated.
@@ -147,7 +174,7 @@ class ChatService:
             )
 
             # -------------------------------------------------
-            # 5. Create Research Agent
+            # 7. Create Research Agent
             # -------------------------------------------------
 
             research_agent = ResearchAgent(
@@ -155,13 +182,13 @@ class ChatService:
             )
 
             # -------------------------------------------------
-            # 6. Create Answer Agent
+            # 8. Create Answer Agent
             # -------------------------------------------------
 
             answer_agent = CrewAnswerAgent()
 
             # -------------------------------------------------
-            # 7. Create Crew
+            # 9. Create Crew
             # -------------------------------------------------
 
             crew = AgenticRAGCrew(
@@ -171,17 +198,22 @@ class ChatService:
             )
 
             # -------------------------------------------------
-            # 8. Execute CrewAI
+            # 10. Execute CrewAI
+            #
+            # Use the contextualized query so the RAG tool
+            # receives enough information for follow-ups.
             # -------------------------------------------------
 
-            crew_result = crew.run(message)
+            crew_result = crew.run(
+                retrieval_query
+            )
 
             answer = crew_result.answer
 
             citations = crew_result.citations
 
             # -------------------------------------------------
-            # 9. Normalize citations
+            # 11. Normalize citations
             # -------------------------------------------------
 
             answer = self._normalize_citations(
@@ -190,7 +222,7 @@ class ChatService:
             )
 
             # -------------------------------------------------
-            # 10. Keep only citations actually referenced
+            # 12. Keep only citations actually referenced
             # -------------------------------------------------
 
             used_citations = (
@@ -206,7 +238,7 @@ class ChatService:
             )
 
             # -------------------------------------------------
-            # 11. Store assistant message
+            # 13. Store assistant message
             # -------------------------------------------------
 
             citation_strings = [
@@ -222,7 +254,7 @@ class ChatService:
             )
 
             # -------------------------------------------------
-            # 12. Response metadata
+            # 14. Response metadata
             # -------------------------------------------------
 
             span.set_attribute(
@@ -236,7 +268,7 @@ class ChatService:
             )
 
             # -------------------------------------------------
-            # 13. API response
+            # 15. API response
             # -------------------------------------------------
 
             return {
@@ -245,6 +277,79 @@ class ChatService:
                 "reason": decision.reason,
                 "citations": used_citations,
             }
+
+    # ---------------------------------------------------------
+    # Conversation context
+    # ---------------------------------------------------------
+
+    def _build_conversation_context(
+        self,
+        messages,
+    ) -> str:
+
+        if not messages:
+            return ""
+
+        context_lines = []
+
+        for message in messages:
+
+            role = message.role.upper()
+
+            context_lines.append(
+                f"{role}: {message.content}"
+            )
+
+        return "\n".join(context_lines)
+
+    # ---------------------------------------------------------
+    # Contextualized retrieval query
+    # ---------------------------------------------------------
+
+    def _build_retrieval_query(
+        self,
+        message: str,
+        conversation_context: str,
+    ) -> str:
+
+        if not conversation_context:
+            return message
+
+        # Identify whether this looks like a follow-up.
+        query_lower = message.lower()
+
+        follow_up_terms = {
+            "those",
+            "that",
+            "it",
+            "they",
+            "them",
+            "these",
+            "this",
+            "same",
+            "previous",
+            "above",
+            "earlier",
+        }
+
+        is_follow_up = any(
+            term in query_lower.split()
+            for term in follow_up_terms
+        )
+
+        if not is_follow_up:
+            return message
+
+        # Use recent conversation context together with the
+        # current question. This gives the embedding model
+        # enough semantic information to retrieve the correct
+        # enterprise document.
+        return (
+            "Conversation context:\n"
+            f"{conversation_context}\n\n"
+            "Current user question:\n"
+            f"{message}"
+        )
 
     # ---------------------------------------------------------
     # Citation normalization

@@ -1,13 +1,15 @@
 from crewai import Agent, LLM
 
+from app.config import settings
+
 
 class ResearchAgent:
 
     def __init__(self, rag_tool):
 
         llm = LLM(
-            model="ollama/qwen3:8b",
-            base_url="http://localhost:11434",
+            model=f"ollama/{settings.llm_model}",
+            base_url=settings.ollama_base_url,
         )
 
         self.agent = Agent(

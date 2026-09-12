@@ -1,14 +1,18 @@
-from abc import ABC, abstractmethod
+from __future__ import annotations
+
 import hashlib
 import math
+from abc import ABC, abstractmethod
+from typing import Any
+
+import httpx
+
+from app.config import settings
 
 
 class EmbeddingProvider(ABC):
     """
-    Abstract interface for generating embeddings.
-
-    The rest of the RAG system will depend on this interface,
-    not directly on Ollama.
+    Interface for embedding providers.
     """
 
     @abstractmethod
@@ -23,72 +27,63 @@ class EmbeddingProvider(ABC):
 
 class MockEmbeddingProvider(EmbeddingProvider):
     """
-    Lightweight deterministic embedding provider.
-
-    Used only for local development/testing.
-
-    Later this will be replaced by OllamaEmbeddingProvider.
+    Lightweight deterministic embedding provider for tests.
     """
 
     def __init__(self, dimensions: int = 384):
         self.dimensions = dimensions
 
     def embed(self, text: str) -> list[float]:
+        values: list[float] = []
+        seed = text.encode("utf-8")
 
-        if not text.strip():
-            raise ValueError("Text cannot be empty.")
-
-        vector = []
-
-        for index in range(self.dimensions):
-
+        for i in range(self.dimensions):
             digest = hashlib.sha256(
-                f"{text}:{index}".encode("utf-8")
-            ).hexdigest()
+                seed + str(i).encode("utf-8")
+            ).digest()
 
-            value = int(digest[:8], 16) / 0xFFFFFFFF
+            value = int.from_bytes(
+                digest[:4],
+                byteorder="big",
+            ) / (2**32)
 
-            vector.append(value)
+            values.append(value * 2.0 - 1.0)
 
-        return self._normalize(vector)
-
-    @staticmethod
-    def _normalize(vector: list[float]) -> list[float]:
-
-        magnitude = math.sqrt(
-            sum(value * value for value in vector)
+        norm = math.sqrt(
+            sum(value * value for value in values)
         )
 
-        if magnitude == 0:
-            return vector
+        if norm == 0:
+            return values
 
-        return [
-            value / magnitude
-            for value in vector
-        ]
+        return [value / norm for value in values]
 
 
 class OllamaEmbeddingProvider(EmbeddingProvider):
     """
-    Ollama-based embedding provider.
-
-    This will be used on the cloud VM.
-
-    Expected Ollama API:
-        POST /api/embed
+    Production embedding provider using Ollama's /api/embed endpoint.
     """
 
     def __init__(
         self,
-        model: str = "qwen3-embedding:0.6b",
-        base_url: str = "http://localhost:11434",
+        model: str | None = None,
+        base_url: str | None = None,
+        dimensions: int | None = None,
     ):
-        self.model = model
-        self.base_url = base_url.rstrip("/")
+        self.model = model or settings.embedding_model
+
+        self.base_url = (
+            base_url or settings.ollama_base_url
+        ).rstrip("/")
+
+        self.dimensions = (
+            dimensions or settings.embedding_dimensions
+        )
 
     def embed(self, text: str) -> list[float]:
-
-        import httpx
+        """
+        Generate one embedding using Ollama.
+        """
 
         response = httpx.post(
             f"{self.base_url}/api/embed",
@@ -96,21 +91,43 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
                 "model": self.model,
                 "input": text,
             },
-            timeout=120,
+            timeout=120.0,
         )
 
         response.raise_for_status()
 
-        data = response.json()
+        data: dict[str, Any] = response.json()
 
-        return data["embeddings"][0]
+        embeddings = data.get("embeddings")
+
+        if not embeddings:
+            raise RuntimeError(
+                f"Ollama returned no embeddings. "
+                f"Response: {data}"
+            )
+
+        embedding = embeddings[0]
+
+        if len(embedding) != self.dimensions:
+            raise ValueError(
+                "Embedding dimension mismatch: "
+                f"expected {self.dimensions}, "
+                f"got {len(embedding)}"
+            )
+
+        return embedding
 
     def embed_batch(
         self,
         texts: list[str],
     ) -> list[list[float]]:
+        """
+        Generate embeddings for multiple texts
+        using one Ollama request.
+        """
 
-        import httpx
+        if not texts:
+            return []
 
         response = httpx.post(
             f"{self.base_url}/api/embed",
@@ -118,9 +135,34 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
                 "model": self.model,
                 "input": texts,
             },
-            timeout=120,
+            timeout=120.0,
         )
 
         response.raise_for_status()
 
-        return response.json()["embeddings"]
+        data: dict[str, Any] = response.json()
+
+        embeddings = data.get("embeddings")
+
+        if not embeddings:
+            raise RuntimeError(
+                f"Ollama returned no embeddings. "
+                f"Response: {data}"
+            )
+
+        if len(embeddings) != len(texts):
+            raise ValueError(
+                "Embedding count mismatch: "
+                f"expected {len(texts)}, "
+                f"got {len(embeddings)}"
+            )
+
+        for embedding in embeddings:
+            if len(embedding) != self.dimensions:
+                raise ValueError(
+                    "Embedding dimension mismatch: "
+                    f"expected {self.dimensions}, "
+                    f"got {len(embedding)}"
+                )
+
+        return embeddings

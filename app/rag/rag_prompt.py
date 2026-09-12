@@ -4,7 +4,10 @@ from app.observability.prompts import PromptManager
 PROMPT_NAME = "rag_answer"
 
 
-SYSTEM_PROMPT = """
+RAG_PROMPT_MESSAGES = [
+    {
+        "role": "system",
+        "content": """
 You are a helpful enterprise knowledge assistant.
 
 Answer the user's question using ONLY the provided context.
@@ -16,22 +19,34 @@ Rules:
 4. Use [1], [2], etc. for citations.
 5. Never create a citation that does not exist.
 6. Do not mention internal retrieval mechanics.
-"""
+""",
+    },
+    {
+        "role": "user",
+        "content": """
+User Question:
+{{query}}
 
+Retrieved Context:
+{{context}}
 
-prompt_manager = PromptManager()
+Answer using the retrieved context.
+Include citations [1], [2] where appropriate.
+""",
+    },
+]
 
 
 def create_rag_prompt():
     """
-    Create the initial RAG prompt in Phoenix.
-
-    Run this once during prompt setup.
+    Create a new version of the RAG answer prompt in Phoenix.
     """
 
-    return prompt_manager.create(
+    manager = PromptManager()
+
+    return manager.create(
         name=PROMPT_NAME,
-        system_prompt=SYSTEM_PROMPT,
+        messages=RAG_PROMPT_MESSAGES,
         model_name="qwen3:8b",
         description="Enterprise Agentic RAG answer prompt",
     )
@@ -39,30 +54,35 @@ def create_rag_prompt():
 
 def get_rag_prompt():
     """
-    Retrieve the latest RAG prompt from Phoenix.
+    Retrieve the current RAG answer prompt from Phoenix.
     """
 
-    return prompt_manager.get(
+    manager = PromptManager()
+
+    return manager.get(
         name=PROMPT_NAME
     )
 
 
-def build_rag_prompt(
+def format_rag_prompt(
     query: str,
     context: str,
 ):
     """
-    Retrieve the Phoenix prompt and inject runtime variables.
+    Retrieve the Phoenix-managed prompt and
+    inject the runtime query and retrieved context.
     """
 
-    prompt = get_rag_prompt()
+    manager = PromptManager()
 
-    formatted = prompt_manager.format(
+    prompt = manager.get(
+        name=PROMPT_NAME
+    )
+
+    return manager.format(
         prompt,
         {
             "query": query,
             "context": context,
         },
     )
-
-    return formatted

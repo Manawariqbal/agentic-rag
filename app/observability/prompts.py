@@ -1,78 +1,110 @@
-from dataclasses import dataclass
-from datetime import datetime
+from typing import Optional
 
+from phoenix.client import Client
+from phoenix.client.types import PromptVersion
 
-@dataclass
-class PromptVersion:
-
-    name: str
-    version: int
-    template: str
-    created_at: datetime
+from app.config import settings
 
 
 class PromptManager:
+    """
+    Phoenix-backed prompt manager.
+
+    Responsibilities:
+    - Connect to Phoenix
+    - Create prompt versions
+    - Retrieve prompts
+    - Retrieve specific prompt versions/tags
+    - Format prompts with runtime variables
+    """
 
     def __init__(self):
+        self.client = Client(
+            base_url=self._get_phoenix_base_url()
+        )
 
-        self._prompts: dict[
-            str,
-            list[PromptVersion]
-        ] = {}
+    def _get_phoenix_base_url(self) -> str:
+        """
+        Convert the configured Phoenix endpoint into the
+        HTTP endpoint required by the Phoenix Python client.
+        """
 
-    def register(
+        endpoint = settings.phoenix_endpoint.rstrip("/")
+
+        # OTLP endpoint:
+        # http://localhost:4317
+        #
+        # Phoenix Client endpoint:
+        # http://localhost:6006
+        if ":4317" in endpoint:
+            return endpoint.replace(":4317", ":6006")
+
+        return endpoint
+
+    def create(
         self,
         name: str,
-        template: str,
-    ) -> PromptVersion:
+        messages: list[dict],
+        model_name: str = "qwen3:8b",
+        description: Optional[str] = None,
+    ):
+        """
+        Create a new prompt version in Phoenix.
 
-        versions = self._prompts.setdefault(
-            name,
-            []
-        )
+        Calling this again with the same prompt name
+        creates another version.
+        """
 
         version = PromptVersion(
-            name=name,
-            version=len(versions) + 1,
-            template=template,
-            created_at=datetime.utcnow(),
+            messages,
+            model_name=model_name,
+            model_provider="OLLAMA",
+            template_format="MUSTACHE",
         )
 
-        versions.append(version)
-
-        return version
+        return self.client.prompts.create(
+            name=name,
+            version=version,
+            prompt_description=description,
+        )
 
     def get(
         self,
         name: str,
-        version: int | None = None,
-    ) -> PromptVersion:
+        version_id: Optional[str] = None,
+        tag: Optional[str] = None,
+    ):
+        """
+        Retrieve a prompt from Phoenix.
 
-        versions = self._prompts.get(name)
+        If no version/tag is supplied, retrieve the prompt
+        identified by name.
+        """
 
-        if not versions:
-            raise KeyError(
-                f"Prompt not found: {name}"
+        if version_id:
+            return self.client.prompts.get(
+                prompt_version_id=version_id
             )
 
-        if version is None:
-            return versions[-1]
+        if tag:
+            return self.client.prompts.get(
+                prompt_identifier=name,
+                tag=tag,
+            )
 
-        for prompt in versions:
-            if prompt.version == version:
-                return prompt
-
-        raise KeyError(
-            f"Prompt version not found: "
-            f"{name}:{version}"
+        return self.client.prompts.get(
+            prompt_identifier=name
         )
 
-    def list_versions(
+    def format(
         self,
-        name: str,
-    ) -> list[PromptVersion]:
+        prompt,
+        variables: dict[str, str],
+    ):
+        """
+        Format a Phoenix prompt using runtime variables.
+        """
 
-        return self._prompts.get(
-            name,
-            []
+        return prompt.format(
+            variables=variables
         )

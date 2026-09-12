@@ -5,45 +5,65 @@ fastapi==0.141.1
 uvicorn[standard]==0.52.4
 pydantic==2.11.10
 pydantic-settings==2.10.1
+email-validator==2.3.0
+python-multipart==0.0.32
 
 # ============================================
 # Document Processing
 # ============================================
-docling
+docling==2.95.0
 
 # ============================================
 # RAG / LlamaIndex
 # ============================================
 llama-index-core==0.14.24
 llama-index-vector-stores-postgres==0.9.0
+llama-index-llms-ollama==0.11.0
 
 # ============================================
-# PostgreSQL
+# PostgreSQL / pgvector
 # ============================================
 psycopg2-binary==2.9.13
+psycopg[binary]==3.3.5
 asyncpg==0.31.0
 pgvector==0.5.0
 
 # ============================================
-# HTTP Client
+# HTTP / Ollama
 # ============================================
 httpx==0.28.1
+ollama==0.6.2
 
 # ============================================
 # Agentic Orchestration
 # ============================================
 crewai==1.9.3
-litellm
+litellm==1.75.3
 
 # ============================================
 # RAG Evaluation
 # ============================================
-ragas
+ragas==0.4.3
 
 # ============================================
 # Observability / Arize Phoenix
 # ============================================
-arize-phoenix-client
-arize-phoenix-otel
-apscheduler
-email-validator apscheduler
+arize-phoenix-client==3.5.0
+arize-phoenix-otel==0.17.1
+
+# ============================================
+# OpenTelemetry
+# Keep aligned with CrewAI/Phoenix environment
+# ============================================
+opentelemetry-api==1.34.1
+opentelemetry-sdk==1.34.1
+opentelemetry-exporter-otlp==1.34.1
+opentelemetry-exporter-otlp-proto-grpc==1.34.1
+
+# ============================================
+# Scheduling
+# ============================================
+APScheduler==3.11.3
+
+
+fastapi-sso==0.16.0

@@ -1,18 +1,28 @@
 import os
 
-os.environ.setdefault("CREWAI_DISABLE_TELEMETRY", "true")
+# Disable CrewAI's automatic telemetry before importing CrewAI.
+os.environ.setdefault(
+    "CREWAI_DISABLE_TELEMETRY",
+    "true",
+)
 
 from fastapi import FastAPI
 
 from app.config import settings
 from app.observability.phoenix import init_phoenix
+from app.api.routes import router, openai_router
 
 
-# Initialize Phoenix BEFORE importing application components
+# ---------------------------------------------------------------------------
+# Phoenix observability
+# ---------------------------------------------------------------------------
+
 init_phoenix()
 
-from app.api.routes import router
 
+# ---------------------------------------------------------------------------
+# FastAPI application
+# ---------------------------------------------------------------------------
 
 app = FastAPI(
     title=settings.app_name,
@@ -20,8 +30,18 @@ app = FastAPI(
     description="Agentic RAG Backend",
 )
 
+
+# Existing Agentic RAG API
 app.include_router(router)
 
+
+# OpenAI-compatible API for OpenWebUI
+app.include_router(openai_router)
+
+
+# ---------------------------------------------------------------------------
+# Health check
+# ---------------------------------------------------------------------------
 
 @app.get("/health")
 def health_check():

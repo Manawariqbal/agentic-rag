@@ -7,6 +7,7 @@ from app.agents.tasks import (
     create_research_task,
 )
 from app.observability.phoenix import get_tracer
+from app.rag.rag_prompt import get_rag_prompt
 
 
 @dataclass
@@ -76,6 +77,68 @@ class AgenticRAGCrew:
                 "crew.agents",
                 "research,answer",
             )
+
+            # -----------------------------------------
+            # Phoenix Prompt Version
+            # -----------------------------------------
+
+            phoenix_prompt = get_rag_prompt()
+
+            prompt_id = getattr(
+                phoenix_prompt,
+                "id",
+                "unknown",
+            )
+
+            prompt_template = getattr(
+                phoenix_prompt,
+                "_template",
+                {},
+            )
+
+            prompt_model = getattr(
+                phoenix_prompt,
+                "_model_name",
+                "unknown",
+            )
+
+            prompt_provider = getattr(
+                phoenix_prompt,
+                "_model_provider",
+                "unknown",
+            )
+
+            span.set_attribute(
+                "prompt.name",
+                "rag_answer",
+            )
+
+            span.set_attribute(
+                "prompt.version_id",
+                prompt_id,
+            )
+
+            span.set_attribute(
+                "prompt.model",
+                prompt_model,
+            )
+
+            span.set_attribute(
+                "prompt.provider",
+                prompt_provider,
+            )
+
+            span.set_attribute(
+                "prompt.template_format",
+                prompt_template.get(
+                    "type",
+                    "unknown",
+                ),
+            )
+
+            # -----------------------------------------
+            # Run CrewAI
+            # -----------------------------------------
 
             crew = self.create_crew(query)
 

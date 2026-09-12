@@ -1,26 +1,34 @@
+import json
+
+from app.memory.database import get_connection
 from app.memory.models import Conversation, Message
 
 
 class ConversationMemory:
-
-    def __init__(self):
-        self.conversations: dict[str, Conversation] = {}
 
     def create_conversation(
         self,
         conversation_id: str,
     ) -> Conversation:
 
-        if conversation_id in self.conversations:
-            return self.conversations[conversation_id]
+        with get_connection() as connection:
+            with connection.cursor() as cursor:
 
-        conversation = Conversation(
+                cursor.execute(
+                    """
+                    INSERT INTO conversations (conversation_id)
+                    VALUES (%s)
+                    ON CONFLICT (conversation_id)
+                    DO NOTHING;
+                    """,
+                    (conversation_id,),
+                )
+
+            connection.commit()
+
+        return Conversation(
             conversation_id=conversation_id
         )
-
-        self.conversations[conversation_id] = conversation
-
-        return conversation
 
     def add_message(
         self,
@@ -30,37 +38,78 @@ class ConversationMemory:
         citations: list[str] | None = None,
     ):
 
-        conversation = self.create_conversation(
+        # Make sure the conversation exists.
+        self.create_conversation(
             conversation_id
         )
 
-        message = Message(
-            role=role,
-            content=content,
-            citations=citations or [],
-        )
+        citations = citations or []
 
-        conversation.messages.append(message)
+        with get_connection() as connection:
+            with connection.cursor() as cursor:
+
+                cursor.execute(
+                    """
+                    INSERT INTO messages (
+                        conversation_id,
+                        role,
+                        content,
+                        citations
+                    )
+                    VALUES (%s, %s, %s, %s::jsonb);
+                    """,
+                    (
+                        conversation_id,
+                        role,
+                        content,
+                        json.dumps(citations),
+                    ),
+                )
+
+            connection.commit()
 
     def get_messages(
         self,
         conversation_id: str,
     ) -> list[Message]:
 
-        conversation = self.conversations.get(
-            conversation_id
-        )
+        with get_connection() as connection:
+            with connection.cursor() as cursor:
 
-        if conversation is None:
-            return []
+                cursor.execute(
+                    """
+                    SELECT
+                        role,
+                        content,
+                        citations,
+                        timestamp
+                    FROM messages
+                    WHERE conversation_id = %s
+                    ORDER BY timestamp ASC, id ASC;
+                    """,
+                    (conversation_id,),
+                )
 
-        return conversation.messages
+                rows = cursor.fetchall()
+
+        return [
+            Message(
+                role=row[0],
+                content=row[1],
+                citations=row[2] or [],
+                timestamp=row[3],
+            )
+            for row in rows
+        ]
 
     def get_recent_messages(
         self,
         conversation_id: str,
         limit: int = 10,
     ) -> list[Message]:
+
+        if limit <= 0:
+            return []
 
         messages = self.get_messages(
             conversation_id
@@ -73,7 +122,15 @@ class ConversationMemory:
         conversation_id: str,
     ):
 
-        self.conversations.pop(
-            conversation_id,
-            None,
-        )
+        with get_connection() as connection:
+            with connection.cursor() as cursor:
+
+                cursor.execute(
+                    """
+                    DELETE FROM conversations
+                    WHERE conversation_id = %s;
+                    """,
+                    (conversation_id,),
+                )
+
+            connection.commit()

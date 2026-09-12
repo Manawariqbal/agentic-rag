@@ -1,13 +1,15 @@
 from crewai import Agent, LLM
 
+from app.config import settings
+
 
 class CrewAIAnswerAgent:
 
     def __init__(self):
 
         llm = LLM(
-            model="ollama/qwen3:8b",
-            base_url="http://localhost:11434",
+            model=f"ollama/{settings.llm_model}",
+            base_url=settings.ollama_base_url,
         )
 
         self.agent = Agent(
