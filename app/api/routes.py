@@ -26,7 +26,7 @@ from app.services.chat_service import ChatService
 
 
 # ---------------------------------------------------------------------------
-# Shared Agentic RAG services
+# Agentic RAG services
 # ---------------------------------------------------------------------------
 
 embedding_provider = OllamaEmbeddingProvider()
@@ -58,7 +58,7 @@ chat_service = ChatService(
 
 
 # ---------------------------------------------------------------------------
-# Native Agentic RAG API
+# Native API
 # ---------------------------------------------------------------------------
 
 router = APIRouter(
@@ -67,11 +67,9 @@ router = APIRouter(
 )
 
 
-@router.post(
-    "/chat",
-    response_model=ChatResponse,
-)
+@router.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest):
+
     result = chat_service.chat(
         conversation_id=request.conversation_id,
         message=request.message,
@@ -97,7 +95,7 @@ def chat(request: ChatRequest):
 
 
 # ---------------------------------------------------------------------------
-# OpenAI-compatible API
+# OpenAI-compatible API for OpenWebUI
 # ---------------------------------------------------------------------------
 
 openai_router = APIRouter(
@@ -111,6 +109,7 @@ openai_router = APIRouter(
     response_model=OpenAIModelList,
 )
 def list_models():
+
     return OpenAIModelList(
         data=[
             OpenAIModel(
@@ -122,18 +121,10 @@ def list_models():
 
 
 # ---------------------------------------------------------------------------
-# OpenWebUI title-generation helpers
+# OpenWebUI internal request detection
 # ---------------------------------------------------------------------------
 
 def is_title_generation_request(message: str) -> bool:
-    """
-    Detect OpenWebUI's internal title-generation request.
-
-    OpenWebUI sends prompts containing text such as:
-    "Generate a concise title summarizing the chat history."
-
-    These requests should not invoke CrewAI or RAG.
-    """
 
     if not message:
         return False
@@ -150,11 +141,60 @@ def is_title_generation_request(message: str) -> bool:
     )
 
 
+def is_follow_up_generation_request(message: str) -> bool:
+
+    if not message:
+        return False
+
+    normalized = message.lower()
+
+    return (
+        "suggest 3-5 relevant follow-up questions"
+        in normalized
+        or "suggest 3-5 relevant follow up questions"
+        in normalized
+        or (
+            "follow-up questions or prompts"
+            in normalized
+            and "chat history" in normalized
+        )
+    )
+
+
+def is_tag_generation_request(message: str) -> bool:
+
+    if not message:
+        return False
+
+    normalized = message.lower()
+
+    return (
+        "generate 1-3 broad tags"
+        in normalized
+        or "generate 1-3 broad tags categorizing"
+        in normalized
+        or (
+            "broad tags categorizing the main themes"
+            in normalized
+            and "chat history" in normalized
+        )
+    )
+
+
+def is_openwebui_metadata_request(message: str) -> bool:
+
+    return (
+        is_title_generation_request(message)
+        or is_follow_up_generation_request(message)
+        or is_tag_generation_request(message)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Local OpenWebUI metadata handlers
+# ---------------------------------------------------------------------------
+
 def extract_title_source(message: str) -> str:
-    """
-    Extract the original USER question from OpenWebUI's
-    title-generation prompt.
-    """
 
     match = re.search(
         r"USER:\s*(.+?)(?:\n|$)",
@@ -163,6 +203,7 @@ def extract_title_source(message: str) -> str:
     )
 
     if match:
+
         question = match.group(1).strip()
 
         if question:
@@ -175,6 +216,7 @@ def extract_title_source(message: str) -> str:
     ]
 
     for line in lines:
+
         if not line.startswith(("#", "-", "{", "}")):
             return line[:120]
 
@@ -182,12 +224,6 @@ def extract_title_source(message: str) -> str:
 
 
 def generate_local_title(message: str) -> str:
-    """
-    Generate a short deterministic title locally.
-
-    We don't call Ollama or CrewAI because title generation
-    is a UI operation, not an Agentic RAG operation.
-    """
 
     question = extract_title_source(message)
 
@@ -239,6 +275,31 @@ def generate_local_title(message: str) -> str:
     return title[:60]
 
 
+def metadata_response(content: str) -> OpenAIChatResponse:
+
+    response_id = "chatcmpl-" + uuid.uuid4().hex
+
+    return OpenAIChatResponse(
+        id=response_id,
+        object="chat.completion",
+        choices=[
+            OpenAIChoice(
+                index=0,
+                message=OpenAIChatResponseMessage(
+                    role="assistant",
+                    content=content,
+                ),
+                finish_reason="stop",
+            )
+        ],
+        usage={
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # OpenAI-compatible chat completions
 # ---------------------------------------------------------------------------
@@ -250,16 +311,18 @@ def generate_local_title(message: str) -> str:
 def openai_chat_completions(
     request: OpenAIChatRequest,
 ):
+
     if not request.messages:
         raise HTTPException(
             status_code=400,
             detail="messages cannot be empty",
         )
 
-    # Find the latest user message.
+    # Find the latest actual string user message.
     user_message = None
 
     for message in reversed(request.messages):
+
         if (
             message.role == "user"
             and isinstance(message.content, str)
@@ -275,62 +338,61 @@ def openai_chat_completions(
         )
 
     # -----------------------------------------------------------------------
-    # OpenWebUI title generation
+    # OpenWebUI internal requests
+    #
+    # IMPORTANT:
+    # These must NEVER enter ChatService / CrewAI / RAG.
     # -----------------------------------------------------------------------
 
     if is_title_generation_request(user_message):
 
         title = generate_local_title(user_message)
 
-        title_content = json.dumps(
-            {"title": title},
-            ensure_ascii=False,
+        return metadata_response(
+            json.dumps(
+                {"title": title},
+                ensure_ascii=False,
+            )
         )
 
-        response_id = (
-            "chatcmpl-"
-            + uuid.uuid4().hex
+    if is_follow_up_generation_request(user_message):
+
+        return metadata_response(
+            json.dumps(
+                {"follow_ups": []},
+                ensure_ascii=False,
+            )
         )
 
-        return OpenAIChatResponse(
-            id=response_id,
-            object="chat.completion",
-            choices=[
-                OpenAIChoice(
-                    index=0,
-                    message=OpenAIChatResponseMessage(
-                        role="assistant",
-                        content=title_content,
-                    ),
-                    finish_reason="stop",
-                )
-            ],
-            usage={
-                "prompt_tokens": 0,
-                "completion_tokens": 0,
-                "total_tokens": 0,
-            },
+    if is_tag_generation_request(user_message):
+
+        return metadata_response(
+            json.dumps(
+                {"tags": ["General"]},
+                ensure_ascii=False,
+            )
         )
 
     # -----------------------------------------------------------------------
-    # Normal Agentic RAG request
+    # Genuine user question
     # -----------------------------------------------------------------------
 
     conversation_id = (
-    request.conversation_id
-    or request.chat_id
-    or request.session_id
-    or request.id
-    or str(uuid.uuid4())
-)
+        request.conversation_id
+        or request.chat_id
+        or request.session_id
+        or str(uuid.uuid4())
+    )
 
     try:
+
         result = chat_service.chat(
             conversation_id=conversation_id,
             message=user_message,
         )
 
     except Exception as exc:
+
         raise HTTPException(
             status_code=500,
             detail=f"Agentic RAG error: {str(exc)}",
@@ -338,19 +400,21 @@ def openai_chat_completions(
 
     answer = result["answer"]
 
-    # -----------------------------------------------------------------------
-    # Add citation sources for OpenWebUI
-    # -----------------------------------------------------------------------
+    citations = result.get(
+        "citations",
+        [],
+    )
 
-    citations = result.get("citations", [])
-
+    # OpenWebUI displays the source information as part of the answer.
     if citations:
+
         source_lines = [
             "",
             "Sources:",
         ]
 
         for citation in citations:
+
             source_lines.append(
                 f"[{citation.citation_id}] "
                 f"{citation.source} — "
@@ -363,10 +427,7 @@ def openai_chat_completions(
             + "\n".join(source_lines)
         )
 
-    response_id = (
-        "chatcmpl-"
-        + uuid.uuid4().hex
-    )
+    response_id = "chatcmpl-" + uuid.uuid4().hex
 
     return OpenAIChatResponse(
         id=response_id,
@@ -388,9 +449,5 @@ def openai_chat_completions(
         },
     )
 
-
-# ---------------------------------------------------------------------------
-# Router registration
-# ---------------------------------------------------------------------------
 
 router_api = router
