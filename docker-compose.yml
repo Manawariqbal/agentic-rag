@@ -22,5 +22,22 @@ services:
       timeout: 5s
       retries: 5
 
+
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    container_name: agentic-rag-phoenix
+    restart: unless-stopped
+
+    ports:
+      - "6006:6006"
+      - "4317:4317"
+
+    volumes:
+      - phoenix_data:/root/.phoenix
+
+
 volumes:
+
   postgres_data:
+
+  phoenix_data:

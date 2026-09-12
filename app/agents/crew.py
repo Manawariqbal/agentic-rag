@@ -3,9 +3,10 @@ from dataclasses import dataclass
 from crewai import Crew, Process
 
 from app.agents.tasks import (
-    create_research_task,
     create_answer_task,
+    create_research_task,
 )
+from app.observability.phoenix import get_tracer
 
 
 @dataclass
@@ -27,17 +28,17 @@ class AgenticRAGCrew:
         self.answer_agent = answer_agent
         self.rag_tool = rag_tool
 
-    def create_crew(self, query: str):
+    def create_crew(self, query):
 
         research_task = create_research_task(
-            research_agent=self.research_agent.agent,
-            query=query,
+            self.research_agent.agent,
+            query,
         )
 
         answer_task = create_answer_task(
-            answer_agent=self.answer_agent.agent,
-            query=query,
-            research_task=research_task,
+            self.answer_agent.agent,
+            query,
+            research_task,
         )
 
         return Crew(
@@ -53,18 +54,47 @@ class AgenticRAGCrew:
             verbose=True,
         )
 
-    def run(self, query: str) -> CrewRunResult:
+    def run(self, query):
 
-        crew = self.create_crew(query)
+        tracer = get_tracer()
 
-        result = crew.kickoff()
+        with tracer.start_as_current_span(
+            "agentic_rag.crew"
+        ) as span:
 
-        answer = str(result.raw)
+            span.set_attribute(
+                "crew.query",
+                query,
+            )
 
-        citations = self.rag_tool.get_last_citations()
+            span.set_attribute(
+                "crew.process",
+                "sequential",
+            )
 
-        return CrewRunResult(
-            answer=answer,
-            citations=citations,
-            raw_output=str(result),
-        )
+            span.set_attribute(
+                "crew.agents",
+                "research,answer",
+            )
+
+            crew = self.create_crew(query)
+
+            result = crew.kickoff()
+
+            answer = str(result.raw)
+
+            span.set_attribute(
+                "crew.output_length",
+                len(answer),
+            )
+
+            span.set_attribute(
+                "crew.result",
+                "success",
+            )
+
+            return CrewRunResult(
+                answer=answer,
+                citations=self.rag_tool.get_last_citations(),
+                raw_output=str(result),
+            )

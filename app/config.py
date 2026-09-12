@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     retrieval_top_k: int = 10
     rerank_top_k: int = 3
 
+    phoenix_enabled: bool = True
+    phoenix_endpoint: str = "http://localhost:4317"
+    phoenix_project_name: str = "agentic-rag"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

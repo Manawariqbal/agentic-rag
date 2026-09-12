@@ -1,59 +1,33 @@
-from contextlib import contextmanager
-from typing import Any
+from opentelemetry import trace
+from phoenix.otel import register
+
+from app.config import settings
 
 
-class PhoenixTracer:
+_tracer = None
 
-    def __init__(
-        self,
-        project_name: str = "agentic-rag",
-        enabled: bool = True,
-    ):
-        self.project_name = project_name
-        self.enabled = enabled
 
-    @contextmanager
-    def trace(
-        self,
-        name: str,
-        metadata: dict[str, Any] | None = None,
-    ):
-        """
-        Generic tracing context.
+def init_phoenix():
+    global _tracer
 
-        Later this will create an actual Phoenix span.
-        """
+    if not settings.phoenix_enabled:
+        return None
 
-        if not self.enabled:
-            yield None
-            return
+    tracer_provider = register(
+        project_name=settings.phoenix_project_name,
+        endpoint=settings.phoenix_endpoint,
+        auto_instrument=False,
+    )
 
-        trace_data = {
-            "name": name,
-            "project": self.project_name,
-            "metadata": metadata or {},
-        }
+    _tracer = trace.get_tracer("agentic-rag")
 
-        print(f"[TRACE START] {name}")
+    return tracer_provider
 
-        try:
-            yield trace_data
 
-        finally:
-            print(f"[TRACE END] {name}")
+def get_tracer():
+    global _tracer
 
-    def record(
-        self,
-        name: str,
-        data: dict[str, Any],
-    ):
-        """
-        Record an event that can later be sent to Phoenix.
-        """
+    if _tracer is None:
+        _tracer = trace.get_tracer("agentic-rag")
 
-        if not self.enabled:
-            return
-
-        print(
-            f"[TRACE] {name}: {data}"
-        )
+    return _tracer
