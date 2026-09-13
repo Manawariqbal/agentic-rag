@@ -44,6 +44,10 @@ class RouterAgent:
             "carry forward",
             "carry-forward",
             "carry",
+            "carried forward",
+            "carryover",
+            "unused days",
+            "unused leave",
             "entitlement",
             "approval",
         }
@@ -51,7 +55,10 @@ class RouterAgent:
         query_lower = query.lower()
         context_lower = conversation_context.lower()
 
+        # ---------------------------------------------------------
         # Check the current question.
+        # ---------------------------------------------------------
+
         current_requires_rag = any(
             keyword in query_lower
             for keyword in knowledge_keywords
@@ -63,7 +70,7 @@ class RouterAgent:
                 reason="Query requires information from the knowledge base.",
             )
 
-        # ------------------------------------------------------------------
+        # ---------------------------------------------------------
         # Follow-up question detection.
         #
         # Questions containing references such as:
@@ -73,10 +80,14 @@ class RouterAgent:
         #   they
         #   them
         #   these
+        #   this
+        #   same
         #   previous
+        #   above
+        #   earlier
         #
         # may depend on earlier conversation context.
-        # ------------------------------------------------------------------
+        # ---------------------------------------------------------
 
         follow_up_terms = {
             "those",
@@ -110,6 +121,10 @@ class RouterAgent:
                     "knowledge from the conversation context."
                 ),
             )
+
+        # ---------------------------------------------------------
+        # General question
+        # ---------------------------------------------------------
 
         return RouteDecision(
             route="general",

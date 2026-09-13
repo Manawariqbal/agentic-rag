@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     phoenix_enabled: bool = True
     phoenix_endpoint: str = "http://localhost:4317"
     phoenix_project_name: str = "agentic-rag"
+    rag_relevance_threshold: float = 0.48
 
     model_config = SettingsConfigDict(
         env_file=".env",

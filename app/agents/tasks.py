@@ -3,9 +3,58 @@ from crewai import Task
 from app.rag.rag_prompt import get_rag_prompt
 
 
-def create_research_task(research_agent, query):
-    return Task(
-        description=f"""
+def create_research_task(
+    research_agent,
+    query,
+    retrieved_evidence="",
+):
+    """
+    Create the Research Task.
+
+    The deterministic retrieval pipeline in ChatService performs
+    retrieval, reranking, and evidence gating before CrewAI runs.
+
+    When retrieved_evidence is provided, the Research Agent must
+    use that evidence as its source of truth instead of performing
+    an independent knowledge-base search.
+    """
+
+    if retrieved_evidence:
+        research_description = f"""
+Review the retrieved evidence below for the following user question.
+
+User Question:
+{query}
+
+================ RETRIEVED EVIDENCE ================
+
+{retrieved_evidence}
+
+======================================================
+
+Your job is to extract the answer from the retrieved evidence.
+
+IMPORTANT RULES:
+- Use ONLY the retrieved evidence provided above.
+- Do NOT perform another knowledge-base search.
+- Do NOT use your own knowledge.
+- Do NOT invent facts.
+- Do NOT invent document names.
+- Do NOT invent section names.
+- Do NOT invent page numbers.
+- Do NOT invent citations.
+- If the retrieved evidence does not contain the answer, explicitly
+  state that the evidence is insufficient.
+
+Return:
+- relevant facts
+- source document
+- section
+- citation references
+"""
+    else:
+        # Backward-compatible fallback.
+        research_description = f"""
 Retrieve evidence for the following user question:
 
 User Question:
@@ -20,7 +69,10 @@ Return the retrieved evidence with:
 - citation references
 
 Do not invent information.
-""",
+"""
+
+    return Task(
+        description=research_description,
         expected_output=(
             "Evidence retrieved from the enterprise knowledge base, "
             "including relevant facts, source, section and citations."

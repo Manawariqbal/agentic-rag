@@ -29,11 +29,16 @@ class AgenticRAGCrew:
         self.answer_agent = answer_agent
         self.rag_tool = rag_tool
 
-    def create_crew(self, query):
+    def create_crew(
+        self,
+        query,
+        retrieved_evidence="",
+    ):
 
         research_task = create_research_task(
             self.research_agent.agent,
             query,
+            retrieved_evidence=retrieved_evidence,
         )
 
         answer_task = create_answer_task(
@@ -55,7 +60,11 @@ class AgenticRAGCrew:
             verbose=True,
         )
 
-    def run(self, query):
+    def run(
+        self,
+        query,
+        retrieved_evidence="",
+    ):
 
         tracer = get_tracer()
 
@@ -76,6 +85,11 @@ class AgenticRAGCrew:
             span.set_attribute(
                 "crew.agents",
                 "research,answer",
+            )
+
+            span.set_attribute(
+                "crew.has_retrieved_evidence",
+                bool(retrieved_evidence),
             )
 
             # -----------------------------------------
@@ -140,7 +154,10 @@ class AgenticRAGCrew:
             # Run CrewAI
             # -----------------------------------------
 
-            crew = self.create_crew(query)
+            crew = self.create_crew(
+                query=query,
+                retrieved_evidence=retrieved_evidence,
+            )
 
             result = crew.kickoff()
 

@@ -4,13 +4,18 @@ from app.agents.rag_tool import RAGTool
 from app.agents.research_agent import ResearchAgent
 from app.agents.router_agent import RouterAgent
 
+from app.config import settings
+
 from app.memory.conversation_memory import ConversationMemory
 
 from app.observability.phoenix import get_tracer
 
 from app.rag.citations import CitationManager
+from app.rag.evidence_gate import EvidenceGate
 from app.rag.reranker import SimpleReranker
 from app.rag.retriever import Retriever
+
+import json
 
 
 class ChatService:
@@ -29,6 +34,14 @@ class ChatService:
         self.retriever = retriever
         self.reranker = reranker
         self.citation_manager = citation_manager
+
+        self.evidence_gate = EvidenceGate(
+            threshold=getattr(
+                settings,
+                "rag_relevance_threshold",
+                0.48,
+            )
+        )
 
     # ---------------------------------------------------------
     # Main Chat
@@ -141,7 +154,7 @@ class ChatService:
                 }
 
             # -------------------------------------------------
-            # 5. Build contextualized RAG query
+            # 5. Build retrieval query
             # -------------------------------------------------
 
             retrieval_query = self._build_retrieval_query(
@@ -160,10 +173,151 @@ class ChatService:
             )
 
             # -------------------------------------------------
-            # 6. Create RAG Tool
+            # 6. DETERMINISTIC RETRIEVAL
+            # -------------------------------------------------
+
+            retrieved_results = self.retriever.retrieve(
+                retrieval_query
+            )
+
+            span.set_attribute(
+                "rag.retrieved_count",
+                len(retrieved_results),
+            )
+
+            # -------------------------------------------------
+            # 7. DETERMINISTIC RERANKING
+            # -------------------------------------------------
+
+            reranked_results = self.reranker.rerank(
+                query=retrieval_query,
+                results=retrieved_results,
+                top_k=3,
+            )
+
+            span.set_attribute(
+                "rag.reranked_count",
+                len(reranked_results),
+            )
+
+            top_score = 0.0
+
+            if reranked_results:
+                top_score = float(
+                    reranked_results[0].get(
+                        "rerank_score",
+                        0.0,
+                    )
+                )
+
+            span.set_attribute(
+                "rag.top_rerank_score",
+                top_score,
+            )
+
+            # -------------------------------------------------
+            # 8. EVIDENCE GATE
+            # -------------------------------------------------
+
+            gate_result = self.evidence_gate.evaluate(
+                reranked_results
+            )
+
+            span.set_attribute(
+                "rag.evidence_sufficient",
+                gate_result.sufficient,
+            )
+
+            span.set_attribute(
+                "rag.evidence_threshold",
+                self.evidence_gate.threshold,
+            )
+
+            span.set_attribute(
+                "rag.evidence_gate_reason",
+                gate_result.reason,
+            )
+
+            # -------------------------------------------------
+            # 9. ABSTAIN WHEN EVIDENCE IS INSUFFICIENT
+            # -------------------------------------------------
+
+            if not gate_result.sufficient:
+
+                answer = (
+                    "I don't have enough information in the "
+                    "available company policies to answer this "
+                    "question."
+                )
+
+                self.memory.add_message(
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=answer,
+                    citations=[],
+                )
+
+                span.set_attribute(
+                    "rag.result",
+                    "insufficient_evidence",
+                )
+
+                span.set_attribute(
+                    "response.length",
+                    len(answer),
+                )
+
+                return {
+                    "answer": answer,
+                    "route": "rag",
+                    "reason": (
+                        "Insufficient evidence in the "
+                        "enterprise knowledge base."
+                    ),
+                    "citations": [],
+                }
+
+            # -------------------------------------------------
+            # 10. Build deterministic citation set
             #
-            # IMPORTANT:
-            # Create it per request so citation state is isolated.
+            # Citations now come from the deterministic retrieval
+            # results instead of relying on the Research Agent
+            # to call the RAG tool.
+            # -------------------------------------------------
+
+            citations = self.citation_manager.build_citations(
+                reranked_results
+            )
+
+            span.set_attribute(
+                "rag.citation_count",
+                len(citations),
+            )
+
+            # -------------------------------------------------
+            # 11. Serialize retrieved evidence
+            #
+            # This is the source of truth that is passed into
+            # the CrewAI Research Agent.
+            # -------------------------------------------------
+
+            retrieved_evidence = json.dumps(
+                reranked_results,
+                indent=2,
+                ensure_ascii=False,
+                default=str,
+            )
+
+            span.set_attribute(
+                "rag.evidence_length",
+                len(retrieved_evidence),
+            )
+
+            # -------------------------------------------------
+            # 12. Create RAG Tool
+            #
+            # Kept available for the Crew architecture and
+            # future agentic retrieval workflows.
             # -------------------------------------------------
 
             rag_tool = RAGTool(
@@ -174,7 +328,7 @@ class ChatService:
             )
 
             # -------------------------------------------------
-            # 7. Create Research Agent
+            # 13. Create Research Agent
             # -------------------------------------------------
 
             research_agent = ResearchAgent(
@@ -182,13 +336,13 @@ class ChatService:
             )
 
             # -------------------------------------------------
-            # 8. Create Answer Agent
+            # 14. Create Answer Agent
             # -------------------------------------------------
 
             answer_agent = CrewAnswerAgent()
 
             # -------------------------------------------------
-            # 9. Create Crew
+            # 15. Create Crew
             # -------------------------------------------------
 
             crew = AgenticRAGCrew(
@@ -198,22 +352,22 @@ class ChatService:
             )
 
             # -------------------------------------------------
-            # 10. Execute CrewAI
+            # 16. Execute CrewAI
             #
-            # Use the contextualized query so the RAG tool
-            # receives enough information for follow-ups.
+            # IMPORTANT:
+            # The deterministic retrieved evidence is explicitly
+            # passed into CrewAI.
             # -------------------------------------------------
 
             crew_result = crew.run(
-                retrieval_query
+                query=retrieval_query,
+                retrieved_evidence=retrieved_evidence,
             )
 
             answer = crew_result.answer
 
-            citations = crew_result.citations
-
             # -------------------------------------------------
-            # 11. Normalize citations
+            # 17. Normalize citations
             # -------------------------------------------------
 
             answer = self._normalize_citations(
@@ -222,7 +376,7 @@ class ChatService:
             )
 
             # -------------------------------------------------
-            # 12. Keep only citations actually referenced
+            # 18. Keep only citations actually referenced
             # -------------------------------------------------
 
             used_citations = (
@@ -238,7 +392,7 @@ class ChatService:
             )
 
             # -------------------------------------------------
-            # 13. Store assistant message
+            # 19. Store assistant message
             # -------------------------------------------------
 
             citation_strings = [
@@ -254,7 +408,7 @@ class ChatService:
             )
 
             # -------------------------------------------------
-            # 14. Response metadata
+            # 20. Response metadata
             # -------------------------------------------------
 
             span.set_attribute(
@@ -268,7 +422,7 @@ class ChatService:
             )
 
             # -------------------------------------------------
-            # 15. API response
+            # 21. API response
             # -------------------------------------------------
 
             return {
@@ -303,7 +457,7 @@ class ChatService:
         return "\n".join(context_lines)
 
     # ---------------------------------------------------------
-    # Contextualized retrieval query
+    # Retrieval query
     # ---------------------------------------------------------
 
     def _build_retrieval_query(
@@ -311,45 +465,15 @@ class ChatService:
         message: str,
         conversation_context: str,
     ) -> str:
+        """
+        Build the query used for vector retrieval.
 
-        if not conversation_context:
-            return message
+        The current user message is used directly for retrieval.
+        Conversation context remains available separately for
+        conversation-aware answer generation.
+        """
 
-        # Identify whether this looks like a follow-up.
-        query_lower = message.lower()
-
-        follow_up_terms = {
-            "those",
-            "that",
-            "it",
-            "they",
-            "them",
-            "these",
-            "this",
-            "same",
-            "previous",
-            "above",
-            "earlier",
-        }
-
-        is_follow_up = any(
-            term in query_lower.split()
-            for term in follow_up_terms
-        )
-
-        if not is_follow_up:
-            return message
-
-        # Use recent conversation context together with the
-        # current question. This gives the embedding model
-        # enough semantic information to retrieve the correct
-        # enterprise document.
-        return (
-            "Conversation context:\n"
-            f"{conversation_context}\n\n"
-            "Current user question:\n"
-            f"{message}"
-        )
+        return message.strip()
 
     # ---------------------------------------------------------
     # Citation normalization

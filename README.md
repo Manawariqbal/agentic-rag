@@ -1,125 +1,130 @@
-# Agentic RAG — Enterprise Knowledge Assistant
+# Agentic RAG --- Enterprise Knowledge Assistant
 
-A modular Agentic RAG system built with **FastAPI, CrewAI, LlamaIndex, PostgreSQL/pgvector, Docling, Ollama, Arize Phoenix, RAGAS, and OpenWebUI**.
+A modular Agentic RAG system built with **FastAPI, CrewAI, LlamaIndex,
+PostgreSQL/pgvector, Docling, Ollama, Arize Phoenix, RAGAS, and
+OpenWebUI**.
 
-This README documents the current working implementation, how to run it, the architecture, observability, evaluation plan, Azure deployment, and the remaining assignment work.
+The current implementation supports document ingestion, contextual
+chunking, vector retrieval, reranking, deterministic evidence gating,
+citation-aware answers, PostgreSQL-backed conversation memory, CrewAI
+orchestration, Phoenix observability/prompt management, and an
+OpenAI-compatible API consumed by OpenWebUI.
 
----
+------------------------------------------------------------------------
 
 ## 1. Architecture
 
-```text
-User / OpenWebUI
-       |
-       v
-+-------------------+
-|     FastAPI       |
-|   /api/v1/chat    |
-+---------+---------+
-          |
-          v
-+-------------------+
-|   ChatService     |
-| memory + routing  |
-+---------+---------+
-          |
-          v
-+-------------------+
-|   Router Agent    |
-+----+---------+----+
-     |         |
- general      RAG
-               |
-               v
-        +--------------+
-        | CrewAI Crew  |
-        +------+-------+
-               |
-        +------+------+
-        |             |
-        v             v
- Research Agent   Answer Agent
-        |
-        v
- knowledge_base_search
-        |
-        v
-+-------------------------+
-|        RAG Pipeline     |
-|                         |
-| Query Embedding         |
-|        |                |
-|        v                |
-| PGVector Top-10         |
-|        |                |
-|        v                |
-| Reranking Top-3         |
-|        |                |
-|        v                |
-| Citation Metadata       |
-+------------+------------+
+``` text
+OpenWebUI
+    |
+    v
+FastAPI /v1/chat/completions
+    |
+    v
+ChatService
+    |
+    +--------------------+
+    |                    |
+    v                    v
+Router Agent         Conversation Memory
+    |
+    +----> general
+    |
+    +----> RAG
+              |
+              v
+        Retrieval Query
+        (current question)
+              |
+              v
+        LlamaIndex Retriever
+              |
+              v
+        PostgreSQL + pgvector
+              |
+              v
+          Top 10
+              |
+              v
+           Reranker
+              |
+              v
+           Top 3
+              |
+              v
+        Evidence Gate
+          /       \
+       reject      pass
+         |          |
+         v          v
+     Abstain    CrewAI Crew
+                    |
+             +------+------+
+             |             |
+             v             v
+       Research Agent  Answer Agent
              |
              v
-       Ollama qwen3:8b
+       Retrieved Evidence
              |
              v
-       Grounded Answer
+        Grounded Answer
              |
              v
-   PostgreSQL Conversation
-          Memory
+        Citation Manager
+             |
+             v
+       PostgreSQL Memory
 
 Observability:
-FastAPI/Crew/RAG
-       |
-       v
+FastAPI / CrewAI / RAG
+        |
+        v
 OpenTelemetry
-       |
-       v
+        |
+        v
 Phoenix :4317
-       |
-       v
+        |
+        v
 Phoenix UI :6006
 ```
 
-### Trace hierarchy
+### Important grounding boundary
 
-The application currently produces:
+Retrieval, reranking, and evidence gating happen **before** CrewAI.
 
-```text
-chat
-└── agentic_rag.crew
-    └── rag.retrieval
-```
+The deterministic reranked evidence is explicitly passed into the CrewAI
+research task. This prevents the Research Agent from independently
+deciding to skip the retrieval tool and hallucinating enterprise policy
+information.
 
-The `chat` span records request/response information. The `crew` span records orchestration information. The `rag.retrieval` span records retrieval, reranking, scores, sources, and citation information.
-
----
+------------------------------------------------------------------------
 
 ## 2. Technology Stack
 
-| Area | Technology |
-|---|---|
-| API | FastAPI |
-| Agent orchestration | CrewAI |
-| Document processing | Docling |
-| RAG framework | LlamaIndex |
-| Vector database | PostgreSQL + pgvector |
-| Embeddings | Ollama `qwen3-embedding:0.6b` |
-| LLM | Ollama `qwen3:8b` |
-| Reranking | Custom lexical/vector hybrid reranker |
-| Citations | Metadata-based citation manager |
-| Memory | Current in-memory abstraction; PostgreSQL persistence planned |
-| Observability | Arize Phoenix + OpenTelemetry |
-| Evaluation | RAGAS |
-| Frontend | OpenWebUI — planned |
-| Deployment | Azure VM + Docker |
+  Area                  Technology
+  --------------------- ---------------------------------------
+  API                   FastAPI
+  Agent orchestration   CrewAI
+  Document processing   Docling
+  RAG framework         LlamaIndex
+  Vector database       PostgreSQL + pgvector
+  Embeddings            Ollama `qwen3-embedding:0.6b`
+  LLM                   Ollama `qwen3:8b`
+  Reranking             Custom lexical/vector hybrid reranker
+  Citations             Metadata-based citation manager
+  Evidence control      Deterministic Evidence Gate
+  Memory                PostgreSQL-backed conversation memory
+  Observability         Arize Phoenix + OpenTelemetry
+  Evaluation            RAGAS
+  Frontend              OpenWebUI
+  Deployment            Azure VM + Docker Compose
 
----
+------------------------------------------------------------------------
 
 ## 3. Repository Structure
 
-```text
+``` text
 agentic-rag/
 ├── app/
 │   ├── agents/
@@ -156,7 +161,9 @@ agentic-rag/
 │   │   ├── pgvector_store.py
 │   │   ├── retriever.py
 │   │   ├── reranker.py
-│   │   └── citations.py
+│   │   ├── citations.py
+│   │   ├── evidence_gate.py
+│   │   └── rag_prompt.py
 │   │
 │   ├── services/
 │   │   └── chat_service.py
@@ -173,18 +180,22 @@ agentic-rag/
 ├── data/
 ├── tests/
 ├── .env
+├── .env.docker
 ├── .env.example
+├── .dockerignore
+├── Dockerfile
+├── docker-compose.yml
 ├── requirements.txt
-└── docker-compose.yml
+└── README.md
 ```
 
----
+------------------------------------------------------------------------
 
-# 4. Document Ingestion
+## 4. Document Ingestion
 
 Documents are processed with Docling.
 
-```text
+``` text
 PDF
  |
  v
@@ -194,10 +205,10 @@ Docling DocumentConverter
 Structured document
  |
  v
-Markdown
+Section-aware contextual chunking
  |
  v
-Section-aware contextual chunking
+Contextual chunks
  |
  v
 Ollama embeddings
@@ -206,23 +217,17 @@ Ollama embeddings
 PostgreSQL + pgvector
 ```
 
-OCR is disabled for the current PDFs because they contain selectable text.
+Current documents:
 
-Each chunk contains metadata such as:
-
-```python
-{
-    "source": "leave_and_attendance_policy.pdf",
-    "section": "Entitlement",
-    "chunk_index": 0
-}
+``` text
+employee_handbook.pdf
+leave_and_attendance_policy.pdf
+travel_and_expense_policy.pdf
 ```
 
-The contextual chunk also contains document and section information before the original text.
+Current ingestion result:
 
-### Current ingestion result
-
-```text
+``` text
 employee_handbook.pdf              13 chunks
 leave_and_attendance_policy.pdf    17 chunks
 travel_and_expense_policy.pdf      14 chunks
@@ -230,104 +235,190 @@ travel_and_expense_policy.pdf      14 chunks
 Total                               44 chunks
 ```
 
----
+The contextual chunker uses approximately:
 
-# 5. PostgreSQL + pgvector
+``` text
+chunk size: 800
+overlap:    100
+```
 
-PostgreSQL is deployed with:
+Chunks retain metadata such as:
 
-```text
+``` python
+{
+    "source": "leave_and_attendance_policy.pdf",
+    "section": "Entitlement",
+    "chunk_index": 0
+}
+```
+
+The contextual prefix includes document and section information to
+improve retrieval quality.
+
+------------------------------------------------------------------------
+
+## 5. PostgreSQL + pgvector
+
+PostgreSQL is deployed using:
+
+``` text
 pgvector/pgvector:pg16
 ```
 
-The vector extension is enabled:
+The vector extension is enabled in PostgreSQL.
 
-```sql
-CREATE EXTENSION vector;
-```
+The current production table is:
 
-The production RAG table is:
-
-```text
+``` text
 rag_documents_1024
 ```
 
-The dimension is **1024**, matching:
+The embedding dimension is:
 
-```text
+``` text
+1024
+```
+
+matching:
+
+``` text
 qwen3-embedding:0.6b
 ```
 
-Do not insert old 384-dimensional mock embeddings into the production 1024-dimensional table.
+Do not insert vectors generated with a different embedding dimension
+into the production table.
 
----
+------------------------------------------------------------------------
 
-# 6. Retrieval
+## 6. Retrieval Pipeline
 
 The current retrieval pipeline is:
 
-```text
-User query
-    |
-    v
+``` text
+Current user question
+        |
+        v
 Ollama embedding
-    |
-    v
+        |
+        v
 1024-dimensional vector
-    |
-    v
+        |
+        v
 pgvector similarity search
-    |
-    v
-Top 10
+        |
+        v
+Top 10 candidates
+        |
+        v
+Reranker
+        |
+        v
+Top 3 results
+        |
+        v
+Evidence Gate
 ```
 
 Configuration:
 
-```text
+``` env
 RETRIEVAL_TOP_K=10
 RERANK_TOP_K=3
+RAG_RELEVANCE_THRESHOLD=0.48
 ```
 
----
+### Conversation-aware retrieval
 
-# 7. Reranking
+Conversation memory is still used for routing and downstream
+conversational context.
+
+However, the **vector retrieval query uses the current user message
+directly**.
+
+This avoids contaminating semantic retrieval with previous turns.
+
+Example:
+
+``` text
+Previous:
+How many annual leave days do employees get?
+
+Current:
+How many unused days can be carried forward?
+```
+
+The vector search receives:
+
+``` text
+How many unused days can be carried forward?
+```
+
+rather than the entire previous conversation.
+
+------------------------------------------------------------------------
+
+## 7. Reranking
 
 The current reranker combines:
 
-```text
+``` text
 70% lexical overlap
 30% original vector similarity
 ```
 
 Flow:
 
-```text
-PGVector
-   |
-   +-- candidate 1
-   +-- candidate 2
-   ...
-   +-- candidate 10
-            |
-            v
-       Reranker
-            |
-            v
-       Top 3 results
+``` text
+PGVector Top 10
+       |
+       v
+   Reranker
+       |
+       v
+    Top 3
 ```
 
-The reranker is behind an abstraction so it can later be replaced with a cross-encoder.
+The reranker is abstracted so it can later be replaced by a
+cross-encoder or another reranking model.
 
----
+------------------------------------------------------------------------
 
-# 8. Citations
+## 8. Evidence Gate
 
-Citations are generated from retrieval metadata rather than invented by the LLM.
+The Evidence Gate is a deterministic anti-hallucination boundary.
+
+``` text
+Reranked Results
+       |
+       v
+Top rerank score
+       |
+       +---- score < 0.48 ----> Abstain
+       |
+       +---- score >= 0.48 ---> CrewAI
+```
+
+When evidence is insufficient, the backend returns:
+
+``` text
+I don't have enough information in the available company policies to answer this question.
+```
+
+CrewAI is not called in that case.
+
+This prevents unsupported enterprise-policy answers from reaching the
+generation layer.
+
+------------------------------------------------------------------------
+
+## 9. Citations
+
+Citations are generated from retrieval metadata rather than invented by
+the LLM.
 
 A citation contains:
 
-```text
+``` text
 citation_id
 source
 section
@@ -336,30 +427,31 @@ chunk_index
 
 Example:
 
-```text
+``` text
 [1] leave_and_attendance_policy.pdf — Entitlement
 ```
 
 The answer agent is instructed to preserve citation markers such as:
 
-```text
+``` text
 [1]
 [2]
 ```
 
-The application validates the citation IDs against actual retrieved citations and removes invalid citation numbers.
+The application validates citation IDs against the actual retrieved
+citation set and removes invalid citation numbers.
 
----
+------------------------------------------------------------------------
 
-# 9. Agentic RAG
+## 10. Agentic RAG
 
 The system uses a deliberately small agent architecture.
 
-## Router Agent
+### Router Agent
 
-Decides:
+Routes requests to:
 
-```text
+``` text
 Question
    |
    +--> general
@@ -367,131 +459,178 @@ Question
    +--> rag
 ```
 
-## Research Agent
+The router is conversation-aware for follow-up questions.
 
-Responsible for finding evidence.
+Examples of policy-related follow-up terms include:
 
-Tool:
-
-```text
-knowledge_base_search
+``` text
+those
+that
+it
+they
+them
+these
+this
+previous
+earlier
+carry forward
+carried forward
+unused days
 ```
 
-The tool performs:
+### Research Agent
 
-```text
-retrieval
-   ↓
-reranking
-   ↓
-citation creation
-   ↓
-evidence formatting
-```
+The Research Agent is responsible for interpreting retrieved evidence.
 
-## Answer Agent
+The deterministic retrieval pipeline runs before CrewAI. The retrieved
+evidence is explicitly supplied to the research task.
 
-Transforms research evidence into a concise grounded answer.
+The agent is instructed:
+
+-   Use only supplied retrieved evidence.
+-   Do not use its own knowledge.
+-   Do not invent facts.
+-   Do not invent document names.
+-   Do not invent section names.
+-   Do not invent page numbers.
+-   Do not invent citations.
+-   State when evidence is insufficient.
+
+### Answer Agent
+
+The Answer Agent transforms research evidence into a concise grounded
+response.
 
 Rules include:
 
-- Use only research output.
-- Do not invent facts.
-- Preserve citations.
-- Do not invent citation IDs.
-- Do not perform another knowledge-base search.
-- Do not include source filenames in the natural-language answer.
+-   Use only the research result.
+-   Do not invent facts.
+-   Preserve valid citations.
+-   Do not invent citation IDs.
+-   Do not perform another knowledge-base search.
+-   Do not include source filenames in the natural-language answer.
+-   Do not include a separate Sources section in the agent-generated
+    answer.
 
----
+The API layer can append the validated citation/source presentation
+returned by the citation manager.
 
-# 10. CrewAI
+------------------------------------------------------------------------
 
-The current workflow is sequential:
+## 11. CrewAI
 
-```text
+The current CrewAI workflow is sequential:
+
+``` text
+Deterministic Retrieval
+        |
+        v
+Evidence Gate
+        |
+        v
 Research Task
-      |
-      v
+        |
+        v
 Research Agent
-      |
-      v
-knowledge_base_search
-      |
-      v
+        |
+        v
 Research Evidence
-      |
-      v
+        |
+        v
 Answer Task
-      |
-      v
+        |
+        v
 Answer Agent
-      |
-      v
+        |
+        v
 Final Answer
 ```
 
-The RAG tool uses:
+The deterministic retrieved/reranked evidence is passed into the
+Research Task.
 
-```python
-result_as_answer = True
-```
+This is intentional: the application does not depend on the LLM deciding
+whether it should call `knowledge_base_search`.
 
-This prevents repeated research tool calls after evidence is returned.
+The RAG tool remains available as part of the agent architecture for
+future agentic retrieval workflows.
 
-CrewAI's independent telemetry is disabled because Phoenix/OpenTelemetry is used as the application observability layer:
+CrewAI telemetry is disabled because Phoenix/OpenTelemetry is used as
+the application's observability layer:
 
-```env
+``` env
 CREWAI_DISABLE_TELEMETRY=true
 ```
 
----
+------------------------------------------------------------------------
 
-# 11. Ollama
+## 12. Ollama
 
 Required models:
 
-```text
+``` text
 qwen3:8b
 qwen3-embedding:0.6b
 ```
 
-Check:
+Check models:
 
-```bash
+``` bash
 ollama list
 ```
 
-Check Ollama API:
+Check Ollama:
 
-```bash
+``` bash
 curl http://localhost:11434/api/tags
 ```
 
-Application endpoint:
+Application configuration:
 
-```text
-http://localhost:11434
+``` env
+OLLAMA_BASE_URL=http://localhost:11434
+LLM_MODEL=qwen3:8b
+EMBEDDING_MODEL=qwen3-embedding:0.6b
+EMBEDDING_DIMENSIONS=1024
 ```
 
----
+For Docker, the backend uses:
 
-# 12. FastAPI
+``` env
+OLLAMA_BASE_URL=http://host.docker.internal:11434
+```
+
+------------------------------------------------------------------------
+
+## 13. FastAPI
 
 Health endpoint:
 
-```text
+``` text
 GET /health
 ```
 
-Chat endpoint:
+Application chat endpoint:
 
-```text
+``` text
 POST /api/v1/chat
+```
+
+OpenAI-compatible model endpoint:
+
+``` text
+GET /v1/models
+```
+
+OpenAI-compatible chat endpoint:
+
+``` text
+POST /v1/chat/completions
 ```
 
 Example request:
 
-```json
+``` json
 {
   "conversation_id": "demo-001",
   "message": "How many annual leave days do employees get?"
@@ -500,7 +639,7 @@ Example request:
 
 Example response:
 
-```json
+``` json
 {
   "conversation_id": "demo-001",
   "answer": "Eligible full-time employees receive 20 days of annual leave per calendar year. [1]",
@@ -519,97 +658,156 @@ Example response:
 
 Swagger:
 
-```text
+``` text
 http://localhost:8000/docs
 ```
 
----
+------------------------------------------------------------------------
 
-# 13. Docker Infrastructure
+## 14. OpenWebUI
 
-Current Docker services:
+OpenWebUI is deployed through Docker Compose:
 
-```text
-PostgreSQL + pgvector
-Phoenix
+``` text
+Browser
+   |
+   v
+OpenWebUI :3000
+   |
+   v
+Backend :8000
+   |
+   v
+Agentic RAG
 ```
 
-Start:
+Current frontend port:
 
-```bash
-docker compose up -d postgres phoenix
+``` text
+3000 -> OpenWebUI container port 8080
 ```
 
-Check:
+The backend exposes an OpenAI-compatible API so OpenWebUI can use the
+Agentic RAG service as a model endpoint.
 
-```bash
-docker ps
+Current Azure frontend:
+
+``` text
+http://<AZURE_PUBLIC_IP>:3000
 ```
 
-Expected containers:
+------------------------------------------------------------------------
 
-```text
-agentic-rag-postgres
-agentic-rag-phoenix
+## 15. Conversation Memory
+
+Conversation memory is PostgreSQL-backed.
+
+The abstraction stores:
+
+``` text
+conversation_id
+role
+message
+citations
+timestamp
 ```
 
-Phoenix ports:
+The current chat flow:
 
-```text
-6006 -> Web UI
+``` text
+User message
+    |
+    v
+Load recent messages
+    |
+    v
+Conversation-aware routing
+    |
+    v
+Store user message
+    |
+    v
+RAG / general processing
+    |
+    v
+Store assistant answer + citations
+```
+
+Recent conversation history is used for follow-up routing, while the
+current question is kept as the direct vector retrieval query.
+
+------------------------------------------------------------------------
+
+## 16. Phoenix Observability
+
+Phoenix is deployed using Docker.
+
+Ports:
+
+``` text
+6006 -> Phoenix Web UI
 4317 -> OTLP gRPC
 ```
 
----
+The application uses explicit OpenTelemetry spans.
 
-# 14. Phoenix Observability
+Current trace hierarchy:
 
-Phoenix is deployed with Docker.
-
-Application configuration:
-
-```env
-PHOENIX_ENABLED=true
-PHOENIX_ENDPOINT=http://localhost:4317
-PHOENIX_PROJECT_NAME=agentic-rag
+``` text
+chat
+└── agentic_rag.crew
+    └── rag.retrieval
 ```
-
-The Python application registers Phoenix before application components are imported.
-
-The application uses explicit OpenTelemetry spans rather than relying on unavailable automatic OpenInference instrumentors.
 
 ### `chat` span
 
-Attributes include:
+Tracks information such as:
 
-```text
+``` text
 conversation.id
 user.message
 message.length
 rag.route
 rag.route_reason
-rag.result
+rag.retrieval_query
+rag.retrieved_count
+rag.reranked_count
+rag.top_rerank_score
+rag.evidence_sufficient
+rag.evidence_threshold
+rag.evidence_gate_reason
 rag.citation_count
 response.length
 ```
 
 ### `agentic_rag.crew` span
 
-Attributes include:
+Tracks:
 
-```text
+``` text
 crew.query
 crew.process
 crew.agents
+crew.has_retrieved_evidence
 crew.output_length
 crew.result
 ```
 
+Prompt metadata includes:
+
+``` text
+prompt.name
+prompt.version_id
+prompt.model
+prompt.provider
+prompt.template_format
+```
+
 ### `rag.retrieval` span
 
-Attributes include:
+Tracks:
 
-```text
+``` text
 rag.query
 rag.retrieval_top_k
 rag.rerank_top_k
@@ -620,101 +818,49 @@ rag.citation_count
 rag.result
 ```
 
-Individual result attributes include:
+Individual retrieval result metadata includes source, section, score,
+and rerank score.
 
-```text
-rag.result.0.source
-rag.result.0.section
-rag.result.0.score
-rag.result.0.rerank_score
+------------------------------------------------------------------------
+
+## 17. Phoenix Prompt Management
+
+The current answer-generation task retrieves the RAG prompt through:
+
+``` text
+app/rag/rag_prompt.py
 ```
 
-and equivalent attributes for results 1 and 2.
+The prompt is retrieved from the Phoenix-managed prompt abstraction and
+its system instructions are injected into the Answer Task.
 
----
+The target prompt lifecycle is:
 
-# 15. Phoenix UI
-
-Open:
-
-```text
-http://<AZURE_PUBLIC_IP>:6006
+``` text
+Phoenix Prompt Registry
+        |
+        +-- rag_answer versions
+        |
+        v
+Retrieve production prompt
+        |
+        v
+Answer Agent
+        |
+        v
+Phoenix trace
 ```
 
-Current Azure NSG requirement:
+This supports the project requirement of prompt retrieval/version
+visibility while keeping prompt logic outside the core chat service.
 
-```text
-TCP 6006 -> Allow
-```
+------------------------------------------------------------------------
 
-Keep OTLP `4317` internal whenever possible.
-
-The application exports to:
-
-```text
-localhost:4317
-```
-
----
-
-# 16. Current Phoenix Trace
-
-A successful application request produces:
-
-```text
-chat
-└── agentic_rag.crew
-    └── rag.retrieval
-```
-
-Example retrieval metadata:
-
-```text
-rag.retrieval_top_k = 10
-rag.retrieved_count = 10
-rag.rerank_top_k = 3
-rag.reranked_count = 3
-rag.top_score = 0.5576
-rag.citation_count = 2
-```
-
-This provides visibility into retrieval quality, reranking, sources, and citations.
-
----
-
-# 17. Conversation Memory
-
-Current abstraction:
-
-```text
-conversation_id
-    |
-    +-- user message
-    +-- assistant message
-    +-- citations
-    +-- timestamp
-```
-
-Current implementation is in-memory.
-
-Planned implementation:
-
-```text
-ConversationMemory
-       |
-       v
-PostgreSQL
-```
-
-This will allow conversations to survive application restarts and support multiple backend instances.
-
----
-
-# 18. RAGAS Evaluation
+## 18. RAGAS Evaluation
 
 The evaluation framework contains questions and ground truths for:
 
-```text
+``` text
 How many annual leave days do employees get?
 
 How many annual leave days can be carried forward?
@@ -724,142 +870,151 @@ What is the domestic hotel reimbursement limit?
 How quickly must employees submit expenses?
 ```
 
-Metrics:
+Target metrics:
 
-```text
+``` text
 Faithfulness
 Response Relevancy
 Context Precision
 Context Recall
 ```
 
-The evaluator is already structured around RAGAS `SingleTurnSample`.
+The evaluator is structured around RAGAS `SingleTurnSample`.
 
-Remaining work is connecting the evaluator to an evaluation LLM and running the complete suite.
+Remaining evaluation work includes connecting the evaluator to the
+evaluation LLM and running the complete suite.
 
----
+------------------------------------------------------------------------
 
-# 19. Prompt Management
+## 19. Docker Compose
 
-The current project has:
+Current services:
 
-```text
-app/observability/prompts.py
+``` text
+agentic-rag-postgres
+agentic-rag-phoenix
+agentic-rag-backend
+agentic-rag-openwebui
 ```
 
-with an application-level prompt version abstraction.
+Start the full stack:
 
-The next stage is to migrate this to Phoenix Prompt Management.
-
-Target:
-
-```text
-Phoenix Prompt Registry
-        |
-        +-- rag_answer v1
-        +-- rag_answer v2
-        +-- production version
-                    |
-                    v
-              Answer Agent
+``` bash
+docker compose up -d
 ```
 
-The goal is to support:
+Check:
 
-```text
-create
-retrieve
-version
-use
-trace
+``` bash
+docker compose ps
 ```
 
----
+Expected services:
 
-# 20. OpenWebUI
-
-OpenWebUI will provide the frontend.
-
-Target:
-
-```text
-Browser
-   |
-   v
-OpenWebUI
-   |
-   v
-FastAPI
-   |
-   v
-Agentic RAG
+``` text
+postgres       Healthy
+phoenix        Running
+backend        Up
+openwebui      Healthy
 ```
 
-The backend remains responsible for:
+PostgreSQL:
 
-```text
-routing
-agents
-retrieval
-reranking
-memory
-citations
-LLM
-observability
-evaluation
+``` text
+5432 -> 5432
 ```
 
----
+Backend:
 
-# 21. Azure Deployment
-
-Current VM:
-
-```text
-Name:
-agentic-rag-vm
-
-OS:
-Ubuntu 24.04 LTS
-
-Size:
-Standard_D4as_v7
-
-CPU:
-4 vCPU
-
-RAM:
-16 GiB
-
-Disk:
-64 GiB Standard SSD
-
-Region:
-East US
+``` text
+8000 -> 8000
 ```
 
-The VM runs:
+OpenWebUI:
 
-```text
-FastAPI
-Ollama
-Docker
-PostgreSQL
-pgvector
-Phoenix
+``` text
+3000 -> 8080
 ```
 
-Azure auto-shutdown is configured for cost control.
+Phoenix:
 
----
+``` text
+6006 -> 6006
+4317 -> 4317
+```
 
-# 22. Environment Configuration
+------------------------------------------------------------------------
 
-Recommended `.env`:
+## 20. Local Development
 
-```env
+Create the environment:
+
+``` bash
+conda create -n agentic-rag python=3.11 -y
+conda activate agentic-rag
+```
+
+Install dependencies:
+
+``` bash
+pip install -r requirements.txt
+```
+
+Start infrastructure:
+
+``` bash
+docker compose up -d postgres phoenix
+```
+
+Run the backend:
+
+``` bash
+uvicorn app.main:app --reload
+```
+
+------------------------------------------------------------------------
+
+## 21. Docker Development
+
+Build backend:
+
+``` bash
+docker compose build backend
+```
+
+Start backend:
+
+``` bash
+docker compose up -d backend
+```
+
+View logs:
+
+``` bash
+docker logs -f agentic-rag-backend
+```
+
+Check service health:
+
+``` bash
+docker compose ps
+```
+
+Compile-check a Python file inside the backend container:
+
+``` bash
+docker exec agentic-rag-backend python -m py_compile app/services/chat_service.py
+```
+
+------------------------------------------------------------------------
+
+## 22. Environment Configuration
+
+Host `.env` example:
+
+``` env
 APP_NAME=Agentic RAG
-DEBUG=false
+DEBUG=true
 
 POSTGRES_HOST=localhost
 POSTGRES_PORT=5432
@@ -875,424 +1030,333 @@ EMBEDDING_DIMENSIONS=1024
 RETRIEVAL_TOP_K=10
 RERANK_TOP_K=3
 
-PHOENIX_ENABLED=true
-PHOENIX_ENDPOINT=http://localhost:4317
-PHOENIX_PROJECT_NAME=agentic-rag
-
 CREWAI_DISABLE_TELEMETRY=true
+RAG_RELEVANCE_THRESHOLD=0.48
 ```
 
-Do not commit `.env` or private credentials.
-
----
-
-# 23. Installation
-
-Create the Conda environment:
-
-```bash
-conda create -n agentic-rag python=3.11 -y
-conda activate agentic-rag
-```
-
-Install dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-Important dependency note:
-
-The current CrewAI environment has a known `tokenizers` compatibility warning related to the installed CrewAI version. Do not independently upgrade OpenTelemetry packages without checking CrewAI compatibility.
-
-The working OpenTelemetry versions are:
-
-```text
-opentelemetry-api = 1.34.1
-opentelemetry-sdk = 1.34.1
-opentelemetry-semantic-conventions = 0.55b1
-```
-
-Phoenix packages currently used:
-
-```text
-arize-phoenix-otel = 0.17.1
-arize-phoenix-client = 3.5.0
-```
-
----
-
-# 24. Start Everything
-
-## Step 1 — PostgreSQL + Phoenix
-
-```bash
-docker compose up -d postgres phoenix
-```
-
-## Step 2 — Verify Ollama
-
-```bash
-ollama list
-```
-
-## Step 3 — Activate environment
-
-```bash
-conda activate agentic-rag
-```
-
-## Step 4 — Start FastAPI
-
-```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
-
-## Step 5 — Test health
-
-```bash
-curl http://localhost:8000/health
-```
-
-## Step 6 — Test RAG
-
-```bash
-curl -X POST http://localhost:8000/api/v1/chat   -H "Content-Type: application/json"   -d '{
-    "conversation_id": "demo-001",
-    "message": "How many annual leave days do employees get?"
-  }'
-```
-
----
-
-# 25. Useful Test Questions
-
-```text
-How many annual leave days do employees get?
-
-How many annual leave days can be carried forward?
-
-What is the domestic hotel reimbursement limit?
-
-How quickly must employees submit expenses?
-
-What is the domestic travel class policy?
-
-What are the company working hours?
-```
-
----
-
-# 26. Testing
-
-Syntax:
-
-```bash
-python -m py_compile   app/services/chat_service.py   app/agents/rag_tool.py   app/agents/crew.py
-```
-
-Dependency consistency:
-
-```bash
-pip check
-```
-
-Tests:
-
-```bash
-pytest
-```
-
-API health:
-
-```bash
-curl http://localhost:8000/health
-```
-
----
-
-# 27. Git Commit Before Continuing Development
-
-Check the working tree:
-
-```bash
-git status
-```
-
-Review changes:
-
-```bash
-git diff
-```
-
-Add files:
-
-```bash
-git add .
-```
-
-Commit the current milestone:
-
-```bash
-git commit -m "feat: add Phoenix observability to agentic RAG"
-```
-
-Push:
-
-```bash
-git push origin main
-```
-
-If the project uses another branch:
-
-```bash
-git branch --show-current
-```
-
-Then push that branch.
-
----
-
-# 28. Recommended `.gitignore`
-
-```gitignore
-.env
-.env.*
-!.env.example
-
-__pycache__/
-*.py[cod]
-
-.pytest_cache/
-.mypy_cache/
-
-.venv/
-venv/
-
-data/*
-!data/.gitkeep
-
-*.log
-
-.DS_Store
-
-.idea/
-.vscode/
-
-.ipynb_checkpoints/
+Docker `.env.docker` uses:
+
+``` env
+POSTGRES_HOST=postgres
+OLLAMA_BASE_URL=http://host.docker.internal:11434
+PHOENIX_ENDPOINT=http://phoenix:4317
 ```
 
 Never commit:
 
-```text
+``` text
 .env
-Azure SSH private keys
-API keys
-production passwords
-model files
-database volumes
-Phoenix database files
+.env.docker
 ```
 
----
+if they contain real credentials or secrets.
 
-# 29. Assignment Status
+Use `.env.example` for shareable configuration.
 
-| Requirement | Status |
-|---|---|
-| Docling document processing | Complete |
-| PDF ingestion | Complete |
-| Contextual chunking | Complete |
-| LlamaIndex | Complete |
-| PostgreSQL | Complete |
-| pgvector | Complete |
-| Ollama embeddings | Complete |
-| Vector retrieval | Complete |
-| Reranking | Complete |
-| Citation metadata | Complete |
-| Citation validation | Complete |
-| Ollama LLM | Complete |
-| CrewAI orchestration | Complete |
-| Router Agent | Complete |
-| Research Agent | Complete |
-| Answer Agent | Complete |
-| FastAPI API | Complete |
-| Phoenix server | Complete |
-| OpenTelemetry tracing | Complete |
-| RAG observability | Complete |
-| Conversation memory persistence | Pending |
-| Phoenix Prompt Management | Next |
-| Full RAGAS execution | Pending |
-| OpenWebUI | Pending |
-| Full Docker backend | Pending |
-| Integration tests | Pending |
-| Production hardening | Pending |
+------------------------------------------------------------------------
 
----
+## 23. Azure Deployment
 
-# 30. Development Roadmap
+Current VM:
 
-Continue from the current committed milestone in this order:
+``` text
+Name:
+agentic-rag-vm
 
-```text
-1. Phoenix Prompt Management
-          |
-          v
-2. PostgreSQL Conversation Memory
-          |
-          v
-3. Complete RAGAS evaluation
-          |
-          v
-4. OpenWebUI
-          |
-          v
-5. Dockerize FastAPI
-          |
-          v
-6. Full Docker Compose stack
-          |
-          v
-7. Integration tests
-          |
-          v
-8. Security/configuration hardening
-          |
-          v
-9. Final assignment documentation
+OS:
+Ubuntu 24.04 LTS x64 Gen2
+
+Size:
+Standard_D4as_v7
+
+CPU:
+4 vCPU
+
+RAM:
+16 GiB
+
+Disk:
+128 GiB
+
+Region:
+East US
+
+Public IP:
+Configured separately
 ```
 
-This order keeps the currently working RAG and Phoenix implementation stable while adding the remaining requirements incrementally.
+The VM runs:
 
----
+``` text
+Docker
+Ollama
+FastAPI
+PostgreSQL
+pgvector
+Phoenix
+OpenWebUI
+```
 
-# 31. End-to-End Example
+Azure auto-shutdown is configured for cost control.
 
-For:
+The public-facing application ports currently used are:
 
-```text
+``` text
+3000 -> OpenWebUI
+8000 -> FastAPI
+6006 -> Phoenix UI
+```
+
+Keep database and OTLP ports restricted to trusted networks where
+possible.
+
+------------------------------------------------------------------------
+
+## 24. Verified RAG Behaviors
+
+The current implementation has been tested against the following
+important cases.
+
+### Known policy question
+
+Question:
+
+``` text
 How many annual leave days do employees get?
 ```
 
-the runtime flow is:
+Result:
 
-```text
-User
- |
- v
-FastAPI
- |
- v
-ChatService
- |
- v
-Router Agent
- |
- +----> RAG
-          |
-          v
-      Research Agent
-          |
-          v
-  knowledge_base_search
-          |
-          v
-   Query Embedding
-          |
-          v
-     PGVector
-          |
-       Top 10
-          |
-          v
-      Reranking
-          |
-        Top 3
-          |
-          v
-   Citation Manager
-          |
-          v
-    Research Result
-          |
-          v
-      Answer Agent
-          |
-          v
-      Ollama qwen3:8b
-          |
-          v
-"Eligible full-time employees receive
-20 days of annual leave per calendar year. [1]"
+``` text
+Eligible full-time employees receive 20 days of annual leave per calendar year. [1]
 ```
 
-At the same time Phoenix records:
+Citation:
 
-```text
-chat
-└── agentic_rag.crew
-    └── rag.retrieval
+``` text
+leave_and_attendance_policy.pdf — Entitlement
 ```
 
----
+### Follow-up question
 
-# 32. Why This Architecture
+After asking about annual leave:
 
-The system is modular so each major component can be replaced independently.
-
-For example:
-
-```text
-Ollama
-  -> OpenAI / Azure OpenAI / another local model
-
-SimpleReranker
-  -> Cross-encoder
-
-In-memory Memory
-  -> PostgreSQL / Redis
-
-PGVector
-  -> another vector database
-
-CrewAI
-  -> another orchestration framework
-
-Phoenix
-  -> another observability backend
+``` text
+How many unused days can be carried forward?
 ```
 
-The abstractions around embeddings, reranking, memory, citations, and LLM providers reduce coupling between components.
+Result:
 
----
+``` text
+Up to 5 unused annual-leave days may be carried into the next leave year. [1]
+```
 
-# 33. Submission Notes
+Citation:
 
-For assignment submission, demonstrate these parts:
+``` text
+leave_and_attendance_policy.pdf — Carry Forward
+```
 
-1. PDF ingestion with Docling.
-2. Contextual chunks and metadata.
-3. PostgreSQL/pgvector retrieval.
-4. Reranking.
-5. CrewAI Router/Research/Answer workflow.
-6. Ollama local LLM and embedding model.
-7. Citation-grounded answers.
-8. FastAPI API.
-9. Phoenix trace showing:
-   ```text
-   chat
-   └── agentic_rag.crew
-       └── rag.retrieval
-   ```
-10. Phoenix retrieval attributes and source metadata.
-11. RAGAS evaluation results once evaluation is completed.
-12. OpenWebUI once frontend integration is completed.
-13. Docker Compose for infrastructure.
+### Unknown policy question
 
----
+Question:
 
-## License
+``` text
+What is the employee stock option vesting policy?
+```
 
-## Author
+Result:
 
-Md Manawar Iqbal
+``` text
+I don't have enough information in the available company policies to answer this question.
+```
+
+The system correctly abstains instead of inventing a policy.
+
+------------------------------------------------------------------------
+
+## 25. Key Engineering Decisions
+
+### Deterministic retrieval before agent generation
+
+The system does not rely on an LLM to decide whether enterprise evidence
+exists.
+
+### Current-question retrieval
+
+Conversation history is preserved for context, but the current user
+question is used directly for vector retrieval.
+
+### Evidence gate
+
+Low-confidence retrieval results are rejected before generation.
+
+### Evidence passed into CrewAI
+
+CrewAI receives the actual deterministic retrieved evidence instead of
+independently hallucinating enterprise facts.
+
+### Metadata-based citations
+
+Citations originate from document metadata and retrieved chunks.
+
+### PostgreSQL-backed memory
+
+Conversation state survives backend restarts and can support future
+multi-instance deployments.
+
+### Local model hosting
+
+Ollama keeps LLM and embedding inference under the application's
+infrastructure rather than requiring an external model API.
+
+------------------------------------------------------------------------
+
+## 26. Current Project Status
+
+### Completed
+
+-   [x] Docling document processing
+-   [x] Contextual chunking
+-   [x] Ollama embeddings
+-   [x] PostgreSQL + pgvector
+-   [x] LlamaIndex retrieval
+-   [x] Top-K retrieval
+-   [x] Reranking
+-   [x] Citation metadata
+-   [x] Conversation memory
+-   [x] Conversation-aware routing
+-   [x] Deterministic evidence gate
+-   [x] CrewAI Research Agent
+-   [x] CrewAI Answer Agent
+-   [x] Deterministic evidence passed into CrewAI
+-   [x] Phoenix tracing
+-   [x] Phoenix prompt retrieval
+-   [x] RAGAS evaluation structure
+-   [x] FastAPI
+-   [x] OpenAI-compatible API
+-   [x] OpenWebUI Docker deployment
+-   [x] Azure deployment
+-   [x] Known-answer grounding test
+-   [x] Follow-up retrieval test
+-   [x] Unknown-question abstention test
+
+### Remaining / Next
+
+-   [ ] Complete RAGAS evaluation run
+-   [ ] Improve evaluation dataset
+-   [ ] Add automated integration tests
+-   [ ] Add cross-encoder reranking
+-   [ ] Expand agentic routing/research behavior
+-   [ ] Add richer Phoenix dashboards and prompt versioning workflows
+-   [ ] Harden production security
+-   [ ] Add authentication/authorization
+-   [ ] Add CI/CD
+-   [ ] Add production deployment documentation
+-   [ ] Add performance/load testing
+
+------------------------------------------------------------------------
+
+## 27. Demo Test Cases
+
+### Leave
+
+``` text
+How many annual leave days do employees get?
+```
+
+``` text
+How many unused days can be carried forward?
+```
+
+``` text
+How many sick leave days are available?
+```
+
+### Travel
+
+``` text
+What is the domestic hotel reimbursement limit?
+```
+
+``` text
+Are taxes included in the hotel limit?
+```
+
+``` text
+How quickly must employees submit expenses?
+```
+
+``` text
+What class of flight is allowed for domestic travel?
+```
+
+### Employee handbook
+
+``` text
+What are the normal working hours?
+```
+
+``` text
+What does the remote work policy say?
+```
+
+### Hallucination test
+
+``` text
+What is the employee stock option vesting policy?
+```
+
+``` text
+What is the employee referral bonus?
+```
+
+``` text
+Does the company provide car loans?
+```
+
+The system should abstain when the requested information is not
+supported by the indexed company documents.
+
+------------------------------------------------------------------------
+
+## 28. Project Goal
+
+The project demonstrates an end-to-end production-oriented Agentic RAG
+architecture combining:
+
+``` text
+Document Intelligence
+        +
+Contextual Retrieval
+        +
+Vector Search
+        +
+Reranking
+        +
+Evidence Gating
+        +
+Agentic Orchestration
+        +
+Conversation Memory
+        +
+Citation Grounding
+        +
+Prompt Management
+        +
+Observability
+        +
+Evaluation
+        +
+OpenAI-Compatible API
+        +
+OpenWebUI
+        +
+Docker
+        +
+Azure
+```
+
+The emphasis is on **grounded answers, observable agent execution,
+explicit evidence boundaries, reproducible local model hosting, and
+production-oriented architecture**.
