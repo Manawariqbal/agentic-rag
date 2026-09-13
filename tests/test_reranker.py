@@ -1,83 +1,196 @@
-from app.config import settings
-from app.rag.embedding import OllamaEmbeddingProvider
-from app.rag.pgvector_store import PGVectorStoreAdapter
-from app.rag.retriever import Retriever
 from app.rag.reranker import SimpleReranker
 
 
-def main():
-
-    embedding_provider = OllamaEmbeddingProvider(
-        model=settings.embedding_model,
-        base_url=settings.ollama_base_url,
+def test_tokenize():
+    tokens = SimpleReranker._tokenize(
+        "Employees receive 20 days of Annual Leave."
     )
 
-    vector_store = PGVectorStoreAdapter(
-        embedding_provider=embedding_provider,
-        database=settings.postgres_database,
-        host=settings.postgres_host,
-        port=settings.postgres_port,
-        user=settings.postgres_user,
-        password=settings.postgres_password,
-        table_name="rag_documents_1024",
-        embed_dim=settings.embedding_dimensions,
+    assert "employees" in tokens
+    assert "receive" in tokens
+    assert "20" in tokens
+    assert "days" in tokens
+    assert "annual" in tokens
+    assert "leave" in tokens
+
+
+def test_tokenize_is_case_insensitive():
+    tokens = SimpleReranker._tokenize(
+        "Annual Leave ANNUAL leave"
     )
 
-    retriever = Retriever(
-        vector_store=vector_store,
-        embedding_provider=embedding_provider,
-        top_k=10,
+    assert tokens == {"annual", "leave"}
+
+
+def test_tokenize_removes_punctuation():
+    tokens = SimpleReranker._tokenize(
+        "Annual, Leave! (20 days)."
     )
 
+    assert tokens == {
+        "annual",
+        "leave",
+        "20",
+        "days",
+    }
+
+
+def test_rerank_calculates_lexical_score():
     reranker = SimpleReranker()
 
-    query = "How many annual leave days do employees get?"
+    results = [
+        {
+            "text": "Employees receive annual leave.",
+            "score": 0.5,
+            "metadata": {
+                "source": "leave_policy.pdf",
+                "section": "Entitlement",
+            },
+        },
+        {
+            "text": "Employees can work remotely.",
+            "score": 0.5,
+            "metadata": {
+                "source": "employee_handbook.pdf",
+                "section": "Remote Work",
+            },
+        },
+    ]
 
-    # Step 1: Vector retrieval
-    retrieved_results = retriever.retrieve(query)
+    reranked = reranker.rerank(
+        query="annual leave",
+        results=results,
+        top_k=2,
+    )
 
-    print("\n" + "=" * 70)
-    print("BEFORE RERANKING")
-    print("=" * 70)
+    assert len(reranked) == 2
 
-    for index, result in enumerate(retrieved_results, start=1):
+    # First result contains both query words.
+    # lexical_score = 2 / 2 = 1.0
+    # final_score = 0.7 * 1.0 + 0.3 * 0.5 = 0.85
+    assert reranked[0]["rerank_score"] == 0.85
 
-        print(
-            f"{index}. "
-            f"{result['metadata'].get('section')} "
-            f"| {result['score']:.4f}"
-        )
 
-    # Step 2: Reranking
-    reranked_results = reranker.rerank(
-        query=query,
-        results=retrieved_results,
+def test_rerank_orders_results_by_score():
+    reranker = SimpleReranker()
+
+    results = [
+        {
+            "text": "Employees can work remotely.",
+            "score": 0.9,
+            "metadata": {
+                "section": "Remote Work",
+            },
+        },
+        {
+            "text": "Employees receive annual leave.",
+            "score": 0.5,
+            "metadata": {
+                "section": "Entitlement",
+            },
+        },
+    ]
+
+    reranked = reranker.rerank(
+        query="annual leave",
+        results=results,
+        top_k=2,
+    )
+
+    assert reranked[0]["metadata"]["section"] == "Entitlement"
+    assert reranked[1]["metadata"]["section"] == "Remote Work"
+
+    assert (
+        reranked[0]["rerank_score"]
+        > reranked[1]["rerank_score"]
+    )
+
+
+def test_rerank_respects_top_k():
+    reranker = SimpleReranker()
+
+    results = [
+        {
+            "text": "annual leave policy",
+            "score": 0.5,
+        },
+        {
+            "text": "remote work policy",
+            "score": 0.5,
+        },
+        {
+            "text": "travel expense policy",
+            "score": 0.5,
+        },
+    ]
+
+    reranked = reranker.rerank(
+        query="policy",
+        results=results,
+        top_k=2,
+    )
+
+    assert len(reranked) == 2
+
+
+def test_rerank_preserves_original_result_data():
+    reranker = SimpleReranker()
+
+    original = {
+        "text": "Employees receive annual leave.",
+        "score": 0.8,
+        "metadata": {
+            "source": "leave_policy.pdf",
+            "section": "Entitlement",
+            "chunk_index": 1,
+        },
+    }
+
+    reranked = reranker.rerank(
+        query="annual leave",
+        results=[original],
+        top_k=1,
+    )
+
+    result = reranked[0]
+
+    assert result["text"] == original["text"]
+    assert result["score"] == original["score"]
+    assert result["metadata"] == original["metadata"]
+
+    assert "rerank_score" in result
+
+
+def test_rerank_with_empty_query():
+    reranker = SimpleReranker()
+
+    results = [
+        {
+            "text": "annual leave policy",
+            "score": 0.8,
+        }
+    ]
+
+    reranked = reranker.rerank(
+        query="",
+        results=results,
+        top_k=1,
+    )
+
+    assert len(reranked) == 1
+
+    # No query words means lexical score = 0.
+    # final score = 0.7 * 0 + 0.3 * 0.8 = 0.24
+    assert reranked[0]["rerank_score"] == 0.24
+
+
+def test_rerank_with_empty_results():
+    reranker = SimpleReranker()
+
+    reranked = reranker.rerank(
+        query="annual leave",
+        results=[],
         top_k=3,
     )
 
-    print("\n" + "=" * 70)
-    print("AFTER RERANKING")
-    print("=" * 70)
-
-    for index, result in enumerate(
-        reranked_results,
-        start=1,
-    ):
-
-        print(
-            f"{index}. "
-            f"{result['metadata'].get('section')} "
-            f"| "
-            f"vector={result['score']:.4f} "
-            f"| "
-            f"rerank={result['rerank_score']:.4f}"
-        )
-
-        print(
-            result["text"][:300]
-            .replace("\n", " ")
-        )
-
-
-if __name__ == "__main__":
-    main()
+    assert reranked == []

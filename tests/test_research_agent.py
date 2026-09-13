@@ -1,103 +1,80 @@
-from app.agents.rag_tool import RAGTool
+from crewai.tools import BaseTool
+
 from app.agents.research_agent import ResearchAgent
 
-from app.rag.citations import CitationManager
-from app.rag.embedding import MockEmbeddingProvider
-from app.rag.reranker import SimpleReranker
-from app.rag.retriever import Retriever
-from app.rag.vector_store import InMemoryVectorStore
-from app.ingestion.chunker import DocumentChunk
 
+class DummyRAGTool(BaseTool):
+    name: str = "knowledge_base_search"
 
-def main():
-
-    # -------------------------
-    # Test documents
-    # -------------------------
-
-    chunks = [
-        DocumentChunk(
-            text=(
-                "Employees are entitled to 20 days "
-                "of annual leave per year."
-            ),
-            metadata={
-                "source": "leave_and_attendance_policy.pdf",
-                "section": "Annual Leave",
-                "chunk_index": 0,
-            },
-        ),
-        DocumentChunk(
-            text=(
-                "Employees may carry forward up to "
-                "5 unused annual leave days."
-            ),
-            metadata={
-                "source": "leave_and_attendance_policy.pdf",
-                "section": "Carry Forward",
-                "chunk_index": 0,
-            },
-        ),
-    ]
-
-    # -------------------------
-    # RAG components
-    # -------------------------
-
-    embedding_provider = MockEmbeddingProvider()
-
-    vector_store = InMemoryVectorStore(
-        embedding_provider
+    description: str = (
+        "Search the enterprise knowledge base and "
+        "return relevant evidence."
     )
 
-    vector_store.add_chunks(chunks)
+    def _run(self, query: str) -> str:
+        return "Dummy evidence"
 
-    retriever = Retriever(
-        vector_store=vector_store,
-        embedding_provider=embedding_provider,
-        top_k=3,
+
+def create_research_agent():
+    rag_tool = DummyRAGTool()
+
+    return ResearchAgent(
+        rag_tool=rag_tool,
     )
 
-    reranker = SimpleReranker()
 
-    citation_manager = CitationManager()
+def test_research_agent_is_created():
+    research_agent = create_research_agent()
 
-    # -------------------------
-    # RAG Tool
-    # -------------------------
+    assert research_agent.agent is not None
 
-    rag_tool = RAGTool(
-        retriever=retriever,
-        reranker=reranker,
-        citation_manager=citation_manager,
+
+def test_research_agent_has_correct_role():
+    research_agent = create_research_agent()
+
+    assert research_agent.agent.role == (
+        "Enterprise Knowledge Researcher"
     )
 
-    # -------------------------
-    # Research Agent
-    # -------------------------
 
-    research_agent = ResearchAgent(
-        rag_tool=rag_tool
+def test_research_agent_has_correct_goal():
+    research_agent = create_research_agent()
+
+    assert (
+        research_agent.agent.goal
+        == (
+            "Retrieve accurate information from the enterprise "
+            "knowledge base and provide evidence for the answer agent."
+        )
     )
 
-    print("\nRESEARCH AGENT CREATED")
-    print("======================")
 
-    print(
-        f"Role: {research_agent.agent.role}"
-    )
+def test_research_agent_has_knowledge_base_tool():
+    research_agent = create_research_agent()
 
-    print(
-        f"Goal: {research_agent.agent.goal}"
-    )
+    tools = research_agent.agent.tools
 
-    print(
-        f"Tools: {[tool.name for tool in research_agent.agent.tools]}"
-    )
+    assert len(tools) == 1
+    assert tools[0].name == "knowledge_base_search"
 
-    print(
-        f"LLM: {research_agent.agent.llm}"
-    )
 
-if __name__ == "__main__":
-    main()
+def test_research_agent_disables_delegation():
+    research_agent = create_research_agent()
+
+    assert research_agent.agent.allow_delegation is False
+
+
+def test_research_agent_has_single_iteration():
+    research_agent = create_research_agent()
+
+    assert research_agent.agent.max_iter == 1
+
+
+def test_research_agent_has_grounding_instruction():
+    research_agent = create_research_agent()
+
+    backstory = research_agent.agent.backstory
+
+    assert "knowledge_base_search" in backstory
+    assert "evidence" in backstory
+    assert "Do not invent information." in backstory

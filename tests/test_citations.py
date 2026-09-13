@@ -1,11 +1,8 @@
 from app.rag.citations import CitationManager
 
 
-def main():
-
-    manager = CitationManager()
-
-    results = [
+def create_test_results():
+    return [
         {
             "metadata": {
                 "source": "leave_policy.pdf",
@@ -29,63 +26,86 @@ def main():
         },
     ]
 
-    citations = manager.build_citations(results)
 
-    print("\nCITATIONS")
-    print("=" * 60)
+def test_build_citations():
+    manager = CitationManager()
 
-    for citation in citations:
-        print(citation.display())
+    citations = manager.build_citations(create_test_results())
 
-    answer = (
-        "Employees receive 20 days of annual leave [1]."
-    )
+    assert citations
+    assert len(citations) == 2
 
-    print("\nUSED CITATIONS")
-    print("=" * 60)
+    assert citations[0].source == "leave_policy.pdf"
+    assert citations[0].section == "Entitlement"
+
+    assert citations[1].source == "leave_policy.pdf"
+    assert citations[1].section == "Approval"
+
+
+def test_filter_used_citations():
+    manager = CitationManager()
+
+    citations = manager.build_citations(create_test_results())
+
+    answer = "Employees receive 20 days of annual leave [1]."
 
     used = manager.filter_used_citations(
         answer=answer,
         citations=citations,
     )
 
-    for citation in used:
-        print(citation.display())
+    assert len(used) == 1
+    assert used[0].source == "leave_policy.pdf"
+    assert used[0].section == "Entitlement"
 
-    print("\nVALIDATION")
-    print("=" * 60)
 
-    print(
-        manager.validate_citations(
-            answer=answer,
-            citations=citations,
-        )
+def test_validate_valid_citations():
+    manager = CitationManager()
+
+    citations = manager.build_citations(create_test_results())
+
+    answer = "Employees receive 20 days of annual leave [1]."
+
+    result = manager.validate_citations(
+        answer=answer,
+        citations=citations,
     )
 
-    invalid_answer = (
+    assert result is True
+
+
+def test_validate_invalid_citations():
+    manager = CitationManager()
+
+    citations = manager.build_citations(create_test_results())
+
+    answer = (
         "Employees receive 20 days [1]. "
         "The policy also says something else [99]."
     )
 
-    print("\nINVALID CITATION CHECK")
-    print("=" * 60)
-
-    print(
-        manager.validate_citations(
-            answer=invalid_answer,
-            citations=citations,
-        )
-    )
-
-    cleaned = manager.remove_invalid_citations(
-        answer=invalid_answer,
+    result = manager.validate_citations(
+        answer=answer,
         citations=citations,
     )
 
-    print("\nCLEANED ANSWER")
-    print("=" * 60)
-    print(cleaned)
+    assert result is False
 
 
-if __name__ == "__main__":
-    main()
+def test_remove_invalid_citations():
+    manager = CitationManager()
+
+    citations = manager.build_citations(create_test_results())
+
+    answer = (
+        "Employees receive 20 days [1]. "
+        "The policy also says something else [99]."
+    )
+
+    cleaned = manager.remove_invalid_citations(
+        answer=answer,
+        citations=citations,
+    )
+
+    assert "[1]" in cleaned
+    assert "[99]" not in cleaned

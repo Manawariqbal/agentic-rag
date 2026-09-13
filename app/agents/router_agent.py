@@ -27,17 +27,16 @@ class RouterAgent:
             raise ValueError("Query cannot be empty.")
 
         knowledge_keywords = {
+            # General enterprise / employee terms
             "policy",
+            "employee",
+            "benefit",
+            "responsibilities",
+
+            # Leave and attendance
             "leave",
             "attendance",
             "holiday",
-            "expense",
-            "travel",
-            "hotel",
-            "reimbursement",
-            "benefit",
-            "employee",
-            "remote",
             "annual leave",
             "sick leave",
             "casual leave",
@@ -50,6 +49,28 @@ class RouterAgent:
             "unused leave",
             "entitlement",
             "approval",
+
+            # Travel and expenses
+            "expense",
+            "expenses",
+            "travel",
+            "hotel",
+            "reimbursement",
+            "meal",
+            "meals",
+            "claim",
+            "domestic",
+            "economy",
+            "business class",
+
+            # Employee handbook
+            "remote",
+            "remote work",
+            "security",
+            "performance",
+            "conduct",
+            "working hours",
+            "work hours",
         }
 
         query_lower = query.lower()
@@ -72,21 +93,6 @@ class RouterAgent:
 
         # ---------------------------------------------------------
         # Follow-up question detection.
-        #
-        # Questions containing references such as:
-        #   those
-        #   that
-        #   it
-        #   they
-        #   them
-        #   these
-        #   this
-        #   same
-        #   previous
-        #   above
-        #   earlier
-        #
-        # may depend on earlier conversation context.
         # ---------------------------------------------------------
 
         follow_up_terms = {
@@ -103,9 +109,12 @@ class RouterAgent:
             "earlier",
         }
 
-        contains_follow_up_reference = any(
-            re_word in query_lower.split()
-            for re_word in follow_up_terms
+        query_words = set(
+            query_lower.replace("?", "").replace(",", "").split()
+        )
+
+        contains_follow_up_reference = bool(
+            query_words.intersection(follow_up_terms)
         )
 
         context_requires_rag = any(
@@ -123,7 +132,7 @@ class RouterAgent:
             )
 
         # ---------------------------------------------------------
-        # General question
+        # General question.
         # ---------------------------------------------------------
 
         return RouteDecision(

@@ -1,143 +1,248 @@
-from app.config import settings
-from app.agents.answer_agent import AnswerAgent
+from app.agents.answer_agent import AnswerAgent, AnswerResponse
 from app.rag.citations import CitationManager
-from app.rag.embedding import OllamaEmbeddingProvider
-from app.rag.llm import OllamaLLMProvider
-from app.rag.pgvector_store import PGVectorStoreAdapter
-from app.rag.reranker import SimpleReranker
-from app.rag.retriever import Retriever
 
 
-def main():
+class DummyLLM:
+    def __init__(self, response="Dummy generated answer"):
+        self.response = response
+        self.last_prompt = None
 
-    # --------------------------------------------------
-    # Embeddings
-    # --------------------------------------------------
+    def generate(self, prompt) -> str:
+        self.last_prompt = prompt
+        return self.response
 
-    embedding_provider = OllamaEmbeddingProvider(
-        model=settings.embedding_model,
-        base_url=settings.ollama_base_url,
-    )
 
-    # --------------------------------------------------
-    # PGVector
-    # --------------------------------------------------
+def prompt_to_text(prompt) -> str:
+    """
+    Convert the OpenAIPrompt returned by build_rag_prompt()
+    into searchable text for assertions.
+    """
+    messages = getattr(prompt, "messages", None)
 
-    vector_store = PGVectorStoreAdapter(
-        embedding_provider=embedding_provider,
-        database=settings.postgres_database,
-        host=settings.postgres_host,
-        port=settings.postgres_port,
-        user=settings.postgres_user,
-        password=settings.postgres_password,
-        table_name="rag_documents_1024",
-        embed_dim=settings.embedding_dimensions,
-    )
+    if messages is None:
+        template = getattr(prompt, "_template", None)
 
-    # --------------------------------------------------
-    # Retriever
-    # --------------------------------------------------
+        if isinstance(template, dict):
+            messages = template.get("messages", [])
 
-    retriever = Retriever(
-        vector_store=vector_store,
-        embedding_provider=embedding_provider,
-        top_k=10,
-    )
+    if messages is None:
+        return str(prompt)
 
-    # --------------------------------------------------
-    # Reranker
-    # --------------------------------------------------
+    parts = []
 
-    reranker = SimpleReranker()
+    for message in messages:
+        if isinstance(message, dict):
+            content = message.get("content", "")
+            parts.append(str(content))
+        else:
+            parts.append(str(message))
 
-    # --------------------------------------------------
-    # Citation Manager
-    # --------------------------------------------------
+    return "\n".join(parts)
 
+
+def create_answer_agent(response="Dummy generated answer"):
+    llm = DummyLLM(response=response)
     citation_manager = CitationManager()
 
-    # --------------------------------------------------
-    # Real Ollama LLM
-    # --------------------------------------------------
-
-    llm = OllamaLLMProvider(
-        model=settings.llm_model,
-        base_url=settings.ollama_base_url,
-    )
-
-    answer_agent = AnswerAgent(
+    agent = AnswerAgent(
         llm=llm,
         citation_manager=citation_manager,
     )
 
-    # --------------------------------------------------
-    # Query
-    # --------------------------------------------------
+    return agent, llm
 
-    query = (
-        "How many annual leave days do employees get?"
+
+def sample_results():
+    return [
+        {
+            "text": (
+                "Eligible full-time employees receive 20 days "
+                "of annual leave per calendar year."
+            ),
+            "score": 0.69,
+            "rerank_score": 0.55,
+            "metadata": {
+                "source": "leave_and_attendance_policy.pdf",
+                "section": "Entitlement",
+            },
+        },
+        {
+            "text": (
+                "Annual leave requests require approval "
+                "from the appropriate manager."
+            ),
+            "score": 0.58,
+            "rerank_score": 0.52,
+            "metadata": {
+                "source": "leave_and_attendance_policy.pdf",
+                "section": "Approval",
+            },
+        },
+    ]
+
+
+def test_answer_agent_returns_answer_response():
+    agent, _ = create_answer_agent(
+        response="Employees receive 20 days of annual leave."
     )
 
-    print("\n" + "=" * 70)
-    print("ANSWER AGENT TEST")
-    print("=" * 70)
-
-    print(f"\nQuery: {query}")
-
-    # --------------------------------------------------
-    # Retrieval
-    # --------------------------------------------------
-
-    retrieved_results = retriever.retrieve(
-        query
+    response = agent.answer(
+        query="How many annual leave days do employees get?",
+        results=sample_results(),
     )
 
-    print(
-        f"\nRetrieved: "
-        f"{len(retrieved_results)}"
+    assert isinstance(response, AnswerResponse)
+
+
+def test_answer_agent_returns_llm_answer():
+    expected_answer = (
+        "Employees receive 20 days of annual leave per calendar year."
     )
 
-    # --------------------------------------------------
-    # Reranking
-    # --------------------------------------------------
+    agent, _ = create_answer_agent(response=expected_answer)
 
-    reranked_results = reranker.rerank(
+    response = agent.answer(
+        query="How many annual leave days do employees get?",
+        results=sample_results(),
+    )
+
+    assert response.answer == expected_answer
+
+
+def test_answer_agent_calls_llm():
+    agent, llm = create_answer_agent(
+        response="20 days of annual leave."
+    )
+
+    agent.answer(
+        query="How many annual leave days do employees get?",
+        results=sample_results(),
+    )
+
+    assert llm.last_prompt is not None
+
+
+def test_answer_agent_prompt_contains_query():
+    agent, llm = create_answer_agent()
+
+    query = "How many annual leave days do employees get?"
+
+    agent.answer(
         query=query,
-        results=retrieved_results,
-        top_k=3,
+        results=sample_results(),
     )
 
-    print(
-        f"After reranking: "
-        f"{len(reranked_results)}"
+    prompt_text = prompt_to_text(llm.last_prompt)
+
+    assert query in prompt_text
+
+
+def test_answer_agent_prompt_contains_retrieved_context():
+    agent, llm = create_answer_agent()
+
+    agent.answer(
+        query="How many annual leave days do employees get?",
+        results=sample_results(),
     )
 
-    # --------------------------------------------------
-    # Answer
-    # --------------------------------------------------
+    prompt_text = prompt_to_text(llm.last_prompt)
 
-    response = answer_agent.answer(
-        query=query,
-        results=reranked_results,
+    assert "20 days" in prompt_text
+    assert "leave_and_attendance_policy.pdf" in prompt_text
+    assert "Entitlement" in prompt_text
+    assert "Approval" in prompt_text
+
+
+def test_answer_agent_builds_citations():
+    agent, _ = create_answer_agent(
+        response="Employees receive 20 days of annual leave."
     )
 
-    # --------------------------------------------------
-    # Output
-    # --------------------------------------------------
+    response = agent.answer(
+        query="How many annual leave days do employees get?",
+        results=sample_results(),
+    )
 
-    print("\n" + "=" * 70)
-    print("FINAL ANSWER")
-    print("=" * 70)
+    assert len(response.citations) == 2
 
-    print(response.answer)
+    assert response.citations[0].source == (
+        "leave_and_attendance_policy.pdf"
+    )
 
-    print("\n" + "=" * 70)
-    print("CITATIONS")
-    print("=" * 70)
-
-    for citation in response.citations:
-        print(citation.display())
+    assert response.citations[0].section == "Entitlement"
 
 
-if __name__ == "__main__":
-    main()
+def test_answer_agent_handles_empty_results():
+    agent, llm = create_answer_agent(
+        response="I don't have enough information to answer this question."
+    )
+
+    response = agent.answer(
+        query="What is the employee stock option vesting policy?",
+        results=[],
+    )
+
+    assert response.answer == (
+        "I don't have enough information to answer this question."
+    )
+
+    assert response.citations == []
+
+    prompt_text = prompt_to_text(llm.last_prompt)
+
+    assert "No relevant documents were retrieved." in prompt_text
+
+
+def test_answer_agent_builds_context_with_multiple_results():
+    agent, llm = create_answer_agent()
+
+    results = [
+        {
+            "text": "Employees receive 20 annual leave days.",
+            "metadata": {
+                "source": "leave_and_attendance_policy.pdf",
+                "section": "Entitlement",
+            },
+        },
+        {
+            "text": "Employees may carry forward up to 5 unused days.",
+            "metadata": {
+                "source": "leave_and_attendance_policy.pdf",
+                "section": "Carry Forward",
+            },
+        },
+    ]
+
+    agent.answer(
+        query="What are the leave benefits?",
+        results=results,
+    )
+
+    prompt_text = prompt_to_text(llm.last_prompt)
+
+    assert "20 annual leave days" in prompt_text
+    assert "5 unused days" in prompt_text
+    assert "Entitlement" in prompt_text
+    assert "Carry Forward" in prompt_text
+
+
+def test_answer_agent_handles_missing_metadata():
+    agent, llm = create_answer_agent()
+
+    results = [
+        {
+            "text": "Some retrieved information.",
+            "metadata": {},
+        }
+    ]
+
+    agent.answer(
+        query="What information is available?",
+        results=results,
+    )
+
+    prompt_text = prompt_to_text(llm.last_prompt)
+
+    assert "Some retrieved information." in prompt_text
+    assert "Unknown source" in prompt_text
+    assert "Unknown section" in prompt_text
